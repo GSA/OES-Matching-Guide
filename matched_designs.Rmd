@@ -1,15 +1,15 @@
 <!-- Jake Bowers drafting this -->
 
 ```{r loadlibraries}
-library(tidyverse)
-library(RItools)
-library(optmatch)
-library(designmatch)
-library(highs)
-library(senstrat)
-library(sensemakr)
-library(estimatr)
-library(conflicted)
+install.packages("groundhog")
+library("groundhog")
+
+pkgs <- c(
+  "tidyverse", "RItools", "optmatch", "designmatch", "highs", "senstrat",
+  "sensemakr", "estimatr", "conflicted"
+)
+groundhog.library(pkgs, "2023-12-1")
+
 conflicts_prefer(dplyr::select)
 conflicts_prefer(dplyr::filter)
 ```
@@ -246,7 +246,7 @@ We defer in-depth explanation of these scores to Chapter ?9? in
 `abs_dist` which records the absolute difference in the pre-outcome between
 people in the treated versus control groups; `mh_dist` which records the
 differences in Mahalanobis distance (after transforming the covariates to ranks
-and scaling, see the Rosenbaum chapter 9.X on this); and `ps_dist` which
+and scaling, see the [@rosenbaum2020book] section 9.3 on this); and `ps_dist` which
 records differences in "propensity score".
 
 
@@ -258,7 +258,7 @@ abs(dat["1", "preY"] - dat["5", "preY"])
 summary(abs_dist)
 
 ### Setup for multivariate distances
-covs <- c("sso", "age", "sex", "race", "edu", "grade", "pay", "tenure")
+covs <- c("sso", "age", "sex", "race", "edu", "grade", "pay", "tenure", "preY")
 cov_fmla <- reformulate(covs, response = "trtbin")
 
 ## A multivariate distance score: Mahalanobis distance on rank transformed covariates
@@ -313,10 +313,15 @@ dat %>%
 Below we show a fully-matched design in which no control units are excluded. We
 restrict this design to have no more than 1 treated unit per set and no more
 than 5 controls per set (we can make other decisions to generate a design that
-we like later.) 
+we like later: the decision to restrict the size of the sets has mostly to do
+with the fact the effective sample size of a stratified research design with
+two treatments is enhanced as we (a) get more strata and (b) the strata are
+more equal in size of treated versus controls. We can explain a lot more about
+this.) 
 
 ```{r fm1}
 ## A full-matched design with no more than one treated unit per set and no more than 5 controls per set
+
 fm1 <- fullmatch(mh_dist, min.controls = 1, max.controls = 5, data = dat)
 summary(fm1, min.controls = 0, max.controls = Inf)
 
@@ -331,12 +336,99 @@ dat %>%
 
 In each case the strata (pairs or matched sets) are named with levels like
 "1.1" or "1.99" etc.. where these names are not numbers, but "1.1" means "group
-1, first set". And in our case, here we only have one overall group.
-
+1, first set". And in our case, here we only have one overall group so all of
+the sets start with `1`: when we use exact matching below the first element of
+the set name will change.
+ 
 ### How to assess a matched design?
 
-Did either of those designs do a good job? Should we feel confident using them to remove the influence of the covariates?  We can answer that in two ways:
- - We can claim that our design 
+Did either of those designs do a good job? Should we feel confident using them
+to remove the influence of the covariates?  We have two ways to answer those questions.
+
+First, we can answer that by referring to what we know about the units and the
+theory of change and the alternative explanations that we are trying to engage.
+For example, imagine that we really must remove the effect of age from our
+comparisons in order for any reasonable interpretation of our analysis to shed
+light on the effect of the intervention itself and not on age. We might then
+calculate the difference in age within each set and ask whether any set has
+such a large difference in age that we could not credibly claim to have
+"Controlled for" age with this design overall.
+
+For example, we could make a plot to show this information within sets versus raw differences from the fullmatch.
+
+```{r echo=FALSE, out.width=".9\\textwidth"}
+library(gridExtra)
+bpfm1 <- ggplot(dat, aes(x = fm1, y = age)) +
+  geom_boxplot() +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red")
+dat$nostrata <- rep(1, 45)
+bporig <- ggplot(dat, aes(x = nostrata, y = age)) +
+  geom_boxplot() +
+  stat_summary(
+    fun = mean, geom = "point",
+    shape = 20, size = 3, color = "red", fill = "red"
+  )
+
+grid.arrange(bpfm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
+```
+
+## Evaluate the design: Within set differences
+
+Differences within sets versus raw differences from the pairmatch.
+
+```{r echo=FALSE, out.width=".9\\textwidth"}
+bppm1 <- ggplot(dat, aes(x = pm1, y = age)) +
+  geom_boxplot() +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red")
+
+grid.arrange(bppm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
+```
+
+## Evaluate the design: Inspect within set differences
+
+Are we comfortable with these differences? (Using the full match)
+
+```{r sdiffs, echo=FALSE}
+rawmndiffs <- with(dat, mean(age[nhTrt == 1]) - mean(age[nhTrt == 0]))
+setdiffsfm1 <- dat %>%
+  group_by(fm1) %>%
+  summarize(
+    mneddiffs =
+      mean(age[nhTrt == 1]) -
+        mean(age[nhTrt == 0]),
+    mnAboveHS = mean(age),
+    minAboveHS = min(age),
+    maxAboveHS = max(age)
+  )
+
+setdiffsfm1
+# summary(setdiffs$mneddiffs)
+# quantile(setdiffs$mneddiffs, seq(0,1,.1))
+```
+
+
+
+## Evaluate the design: Inspect within set differences
+
+Are we comfortable with these differences? (Using the pairmatch)
+
+```{r echo=FALSE, warnings=FALSE}
+setdiffspm1 <- dat %>%
+  group_by(pm1) %>%
+  summarize(
+    diffs =
+      age[nhTrt == 1] -
+        age[nhTrt == 0],
+    mnAboveHS = mean(age),
+    minAboveHS = min(age),
+    maxAboveHS = max(age)
+  )
+
+print(setdiffspm1, n = 100)
+quantile(abs(setdiffspm1$diffs), seq(0, 1, .1))
+```
+
+
 
 
 
@@ -356,97 +448,13 @@ We know that in **designs randomized within strata**:
 This means that we can compare  **stratified observational studies** to
 equivalent randomized experiments [@hansen2008cbs].
 
-
-
-## Evaluate the design: Within set differences
-
-```{r echo=FALSE}
-meddat$fm1 <- fm1
-meddat$pm1 <- pm1
-```
-
-Differences within sets versus raw differences from the fullmatch.
-
-```{r echo=FALSE, out.width=".9\\textwidth"}
-library(gridExtra)
-bpfm1 <- ggplot(meddat, aes(x = fm1, y = nhAboveHS)) +
-  geom_boxplot() +
-  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red")
-meddat$nostrata <- rep(1, 45)
-bporig <- ggplot(meddat, aes(x = nostrata, y = nhAboveHS)) +
-  geom_boxplot() +
-  stat_summary(
-    fun = mean, geom = "point",
-    shape = 20, size = 3, color = "red", fill = "red"
-  )
-
-grid.arrange(bpfm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
-```
-
-## Evaluate the design: Within set differences
-
-Differences within sets versus raw differences from the pairmatch.
-
-```{r echo=FALSE, out.width=".9\\textwidth"}
-bppm1 <- ggplot(meddat, aes(x = pm1, y = nhAboveHS)) +
-  geom_boxplot() +
-  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red")
-
-grid.arrange(bppm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
-```
-
-## Evaluate the design: Inspect within set differences
-
-Are we comfortable with these differences? (Using the full match)
-
-```{r sdiffs, echo=FALSE}
-rawmndiffs <- with(meddat, mean(nhAboveHS[nhTrt == 1]) - mean(nhAboveHS[nhTrt == 0]))
-setdiffsfm1 <- meddat %>%
-  group_by(fm1) %>%
-  summarize(
-    mneddiffs =
-      mean(nhAboveHS[nhTrt == 1]) -
-        mean(nhAboveHS[nhTrt == 0]),
-    mnAboveHS = mean(nhAboveHS),
-    minAboveHS = min(nhAboveHS),
-    maxAboveHS = max(nhAboveHS)
-  )
-
-setdiffsfm1
-# summary(setdiffs$mneddiffs)
-# quantile(setdiffs$mneddiffs, seq(0,1,.1))
-```
-
-
-
-## Evaluate the design: Inspect within set differences
-
-Are we comfortable with these differences? (Using the pairmatch)
-
-```{r echo=FALSE, warnings=FALSE}
-setdiffspm1 <- meddat %>%
-  group_by(pm1) %>%
-  summarize(
-    diffs =
-      nhAboveHS[nhTrt == 1] -
-        nhAboveHS[nhTrt == 0],
-    mnAboveHS = mean(nhAboveHS),
-    minAboveHS = min(nhAboveHS),
-    maxAboveHS = max(nhAboveHS)
-  )
-
-print(setdiffspm1, n = 100)
-quantile(abs(setdiffspm1$diffs), seq(0, 1, .1))
-```
-
-
 ## Evaluate the design: Compare to a randomized experiment.
 
 The within-set differences look different from those that would be expected
 from a randomized experiment.
 
 ```{r xbhs2, echo=TRUE}
-xbfm1 <- balanceTest(nhTrt ~ nhAboveHS + strata(fm1) + strata(pm1) + strata(fm2), data = meddat)
+xbfm1 <- balanceTest(nhTrt ~ age + strata(fm1) + strata(pm1) + strata(fm2), data = dat)
 xbfm1$results[, , ]
 xbfm1$overall
 ```
@@ -457,7 +465,7 @@ The within-set differences look different from those that would be expected
 from a randomized experiment.
 
 ```{r xbhs2, echo=TRUE}
-xbfm1 <- balanceTest(nhTrt ~ nhAboveHS + strata(fm1), data = meddat)
+xbfm1 <- balanceTest(nhTrt ~ age + strata(fm1), data = dat)
 xbfm1$results[, , ]
 xbfm1$overall
 ```
@@ -470,10 +478,10 @@ stratified design and same covariate values (and `balanceTest` uses a large
 sample Normal approximation to this distribution.)
 
 ```{r xbagain, echo=TRUE}
-setmeanDiffs <- meddat %>%
+setmeanDiffs <- dat %>%
   group_by(fm1) %>%
   summarise(
-    diffAboveHS = mean(nhAboveHS[nhTrt == 1]) - mean(nhAboveHS[nhTrt == 0]),
+    diffAboveHS = mean(age[nhTrt == 1]) - mean(age[nhTrt == 0]),
     nb = n(),
     nTb = sum(nhTrt),
     nCb = sum(1 - nhTrt),
@@ -503,10 +511,10 @@ Maybe we would prefer to limit the worse matches?
 ```{r caliper_one_dim, echo=TRUE}
 quantile(as.vector(absdist), seq(0, 1, .1))
 
-fm3 <- fullmatch(absdist + caliper(absdist, .08), data = meddat)
+fm3 <- fullmatch(absdist + caliper(absdist, .08), data = dat)
 summary(fm3, min.controls = 0, max.controls = Inf)
 
-xb_1dim <- balanceTest(nhTrt ~ nhAboveHS + strata(fm1) + strata(pm1) + strata(fm2) + strata(fm3), data = meddat)
+xb_1dim <- balanceTest(nhTrt ~ age + strata(fm1) + strata(pm1) + strata(fm2) + strata(fm3), data = dat)
 
 xb_1dim$overall
 xb_1dim$results[, , ]
@@ -539,9 +547,9 @@ score. (Notice that we also use the `propensity.model` option to `summary` here
 to get a quick look at the balance test:)
 
 ```{r}
-fmCal1 <- fullmatch(psdist + caliper(psdist, 2), data = meddat, tol = .00001)
+fmCal1 <- fullmatch(psdist + caliper(psdist, 2), data = dat, tol = .00001)
 summary(fmCal1, min.controls = 0, max.controls = Inf, propensity.model = theglm)
-pmCal1 <- pairmatch(psdist + caliper(psdist, 2), data = meddat, remove.unmatchables = TRUE)
+pmCal1 <- pairmatch(psdist + caliper(psdist, 2), data = dat, remove.unmatchables = TRUE)
 summary(pmCal1, propensity.model = theglm)
 ```
 
@@ -554,16 +562,16 @@ homicide rates (here using many covariates all together).
 
 ```{r}
 ## Create an R formulate object from vectors of variable names
-balfmla <- reformulate(c("nhPopD", "nhAboveHS"), response = "nhTrt")
+balfmla <- reformulate(c("nhPopD", "age"), response = "nhTrt")
 
 ## Create a mahalanobis distance matrix (of rank transformed data)
-mhdist <- match_on(balfmla, data = meddat, method = "rank_mahalanobis")
+mhdist <- match_on(balfmla, data = dat, method = "rank_mahalanobis")
 
 ## Now make a matrix recording absolute differences between neighborhoods in
 ## terms of baseline homicide rate
-tmpHom03 <- meddat$HomRate03
-names(tmpHom03) <- rownames(meddat)
-absdist <- match_on(tmpHom03, z = meddat$nhTrt, data = meddat)
+tmpHom03 <- dat$preY
+names(tmpHom03) <- rownames(dat)
+absdist <- match_on(tmpHom03, z = dat$nhTrt, data = dat)
 absdist[1:3, 1:3]
 quantile(as.vector(absdist), seq(0, 1, .1))
 quantile(as.vector(mhdist), seq(0, 1, .1))
@@ -579,13 +587,13 @@ as.matrix(mhdist)[5:10, 5:10]
 Now, use this new matrix for the creation of stratified designs --- but possibly excluding some units (also showing here the `tol` argument. The version with the tighter tolerance produces a solution with smaller overall distances)
 
 ```{r}
-fmCal2a <- fullmatch(distCal, data = meddat, tol = .001)
+fmCal2a <- fullmatch(distCal, data = dat, tol = .001)
 summary(fmCal2a, min.controls = 0, max.controls = Inf)
-fmCal2b <- fullmatch(distCal, data = meddat, tol = .00001)
+fmCal2b <- fullmatch(distCal, data = dat, tol = .00001)
 summary(fmCal2b, min.controls = 0, max.controls = Inf, propensity.model = theglm)
 
-meddat$fmCal2a <- fmCal2a
-meddat$fmCal2b <- fmCal2b
+dat$fmCal2a <- fmCal2a
+dat$fmCal2b <- fmCal2b
 
 fmCal2a_dists <- matched.distances(fmCal2a, distCal)
 fmCal2b_dists <- matched.distances(fmCal2b, distCal)
@@ -599,23 +607,23 @@ mean(unlist(fmCal2b_dists))
 We often have covariates that are categorical/nominal and for which we really care about strong balance. One approach to solve this problem is match **exactly** on one or more of such covariates. If `fullmatch` or `match_on` is going slow, this is also an approach to speed things up.
 
 ```{r echo=FALSE}
-meddat$classLowHi <- ifelse(meddat$nhClass %in% c(2, 3), "hi", "lo")
+dat$classLowHi <- ifelse(dat$nhClass %in% c(2, 3), "hi", "lo")
 ```
 
 ```{r}
-dist2 <- psdist + exactMatch(nhTrt ~ classLowHi, data = meddat)
+dist2 <- psdist + exactMatch(nhTrt ~ classLowHi, data = dat)
 summary(dist2)
-## or mhdist <- match_on(balfmla,within=exactMatch(nhTrt~classLowHi,data=meddat),data=meddat,method="rank_mahalanobis")
-## or fmEx1 <- fullmatch(update(balfmla,.~.+strata(classLowHi)),data=meddat,method="rank_mahalanobis")
-fmEx1 <- fullmatch(dist2, data = meddat, tol = .00001)
+## or mhdist <- match_on(balfmla,within=exactMatch(nhTrt~classLowHi,data=dat),data=dat,method="rank_mahalanobis")
+## or fmEx1 <- fullmatch(update(balfmla,.~.+strata(classLowHi)),data=dat,method="rank_mahalanobis")
+fmEx1 <- fullmatch(dist2, data = dat, tol = .00001)
 summary(fmEx1, min.controls = 0, max.controls = Inf, propensity.model = theglm)
 print(fmEx1, grouped = T)
-meddat$fmEx1 <- fmEx1
+dat$fmEx1 <- fmEx1
 ```
 ## Exact Matching
 
 ```{r}
-ftable(Class = meddat$classLowHi, Trt = meddat$nhTrt, fmEx1, col.vars = c("Class", "Trt"))
+ftable(Class = dat$classLowHi, Trt = dat$nhTrt, fmEx1, col.vars = c("Class", "Trt"))
 ```
 
 **Exact Matching**
