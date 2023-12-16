@@ -343,7 +343,19 @@ the set name will change.
 ### How to assess a matched design?
 
 Did either of those designs do a good job? Should we feel confident using them
-to remove the influence of the covariates?  We have two ways to answer those questions.
+to remove the influence of the covariates? We have two ways to answer those
+questions.^[Another question we should ask about a research design is whether
+it provides enough information to help us discern differences should those
+differences exist. We set aside this question of statistical power or
+information for later. From the perspective of stratified designs, statistical
+power or information or "effective sample size" is a function of not only
+number of total observations, but of the number of strata, and the variance of
+both the treatment and the outcomes within strata. In the case of a binary
+treatment, variance of the treatment, amounts to the proportion treated.  In a
+matched design that creates pairs, these considerations go away --- the number
+of strata is maximized and each pair has exactly one treated and one control
+unit. When creating full matched designs --- with varying numbers of treated
+and controls per set --- these issues become more important.]
 
 First, we can answer that by referring to what we know about the units and the
 theory of change and the alternative explanations that we are trying to engage.
@@ -354,15 +366,37 @@ calculate the difference in age within each set and ask whether any set has
 such a large difference in age that we could not credibly claim to have
 "Controlled for" age with this design overall.
 
-For example, we could make a plot to show this information within sets versus raw differences from the fullmatch.
 
 ```{r echo=FALSE, out.width=".9\\textwidth"}
 library(gridExtra)
-bpfm1 <- ggplot(dat, aes(x = fm1, y = age)) +
+dat_plot1 <- dat %>% select(age,trtbin,fm1) %>% 
+  group_by(fm1) %>%
+  mutate(agediff=abs(mean(age[trtbin==1]) - mean(age[trtbin==0])),
+         nb=n()) %>%
+  ungroup() %>%
+  mutate(fm1 = factor(fm1, levels = names(sort(tapply(agediff, fm1, mean),decreasing=TRUE))))
+dat_plot1$nostrata <- rep(1, nrow(dat_plot1))
+```
+
+For example, we could make a plot to show this information within sets versus
+raw differences from the fullmatch. Here, for example, we show the worst 100
+sets in order of remaining difference in mean age between the treated and
+control observations from left to right. Notice that no set has nearly the age
+difference that we see overall (in the boxplot at the far right): without
+matching we would be comparing people who are `r min(dat$age)` with people who
+are `r max(dat$age)` whereas after matching the worse set has has a difference
+of `r max(dat_plot1$agediff)`.
+
+```{r makeplot1}
+bpfm1 <- ggplot(dat_plot1 %>% filter(agediff > quantile(agediff,.9)), aes(x = fm1, y = age)) +
   geom_boxplot() +
-  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red")
-dat$nostrata <- rep(1, 45)
-bporig <- ggplot(dat, aes(x = nostrata, y = age)) +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red") +
+  geom_text(aes(x=fm1,y=min(age),label=nb))+
+  annotate("text",x = 0, y = min(dat_plot1$age), label="Set \n size")
+bpfm1 <- bpfm1 + scale_x_discrete(expand = expand_scale(add = c(2, 0.5)))
+bpfm1
+
+bporig <- ggplot(dat_plot1, aes(x = nostrata, y = age)) +
   geom_boxplot() +
   stat_summary(
     fun = mean, geom = "point",
@@ -372,65 +406,34 @@ bporig <- ggplot(dat, aes(x = nostrata, y = age)) +
 grid.arrange(bpfm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
 ```
 
-## Evaluate the design: Within set differences
-
-Differences within sets versus raw differences from the pairmatch.
-
-```{r echo=FALSE, out.width=".9\\textwidth"}
-bppm1 <- ggplot(dat, aes(x = pm1, y = age)) +
-  geom_boxplot() +
-  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red")
-
-grid.arrange(bppm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
-```
-
-## Evaluate the design: Inspect within set differences
-
-Are we comfortable with these differences? (Using the full match)
+We can futher reason about these differences by looking at them more closely.
+Here we use the full matched design just for convenience. For example, we see
+that the worst matched set has a difference of 33 years --- including a 15 year
+old and a 49 year old. This might be a bad set depending on the context. Across
+the sets, we see that half of them differ by less than 5.8 years of age, and
+that 90% of the sets differ by less than about 13 years of age. Is this sign
+that we have done enough to remove the effects of age from the impact
+evaluation? That depends on context. Let us imagine for now that we are not
+satified with this design --- that we'd like to have smaller differences on
+age. But that we also are worried about some of the other variables. And, in
+fact we'd like to evaluate the design as a whole. How might we do that?
 
 ```{r sdiffs, echo=FALSE}
-rawmndiffs <- with(dat, mean(age[nhTrt == 1]) - mean(age[nhTrt == 0]))
+rawmndiffs <- with(dat, mean(age[trtbin == 1]) - mean(age[trtbin == 0]))
 setdiffsfm1 <- dat %>%
   group_by(fm1) %>%
   summarize(
-    mneddiffs =
-      mean(age[nhTrt == 1]) -
-        mean(age[nhTrt == 0]),
-    mnAboveHS = mean(age),
-    minAboveHS = min(age),
-    maxAboveHS = max(age)
+    mn_age_diffs =
+      mean(age[trtbin == 1]) - mean(age[trtbin == 0]),
+    mn_age= mean(age),
+    min_age= min(age),
+    max_age= max(age)
   )
 
-setdiffsfm1
-# summary(setdiffs$mneddiffs)
-# quantile(setdiffs$mneddiffs, seq(0,1,.1))
+setdiffsfm1 %>% arrange(desc(abs(mn_age_diffs))) %>% head()
+## summary(setdiffsfm1$mn_age_diffs)
+quantile(abs(setdiffsfm1$mn_age_diffs), seq(0,1,.1))
 ```
-
-
-
-## Evaluate the design: Inspect within set differences
-
-Are we comfortable with these differences? (Using the pairmatch)
-
-```{r echo=FALSE, warnings=FALSE}
-setdiffspm1 <- dat %>%
-  group_by(pm1) %>%
-  summarize(
-    diffs =
-      age[nhTrt == 1] -
-        age[nhTrt == 0],
-    mnAboveHS = mean(age),
-    minAboveHS = min(age),
-    maxAboveHS = max(age)
-  )
-
-print(setdiffspm1, n = 100)
-quantile(abs(setdiffspm1$diffs), seq(0, 1, .1))
-```
-
-
-
-
 
 ## How to assess stratified research designs
 
@@ -454,7 +457,7 @@ The within-set differences look different from those that would be expected
 from a randomized experiment.
 
 ```{r xbhs2, echo=TRUE}
-xbfm1 <- balanceTest(nhTrt ~ age + strata(fm1) + strata(pm1) + strata(fm2), data = dat)
+xbfm1 <- balanceTest(trtbin ~ age + strata(fm1) + strata(pm1) + strata(fm2), data = dat)
 xbfm1$results[, , ]
 xbfm1$overall
 ```
@@ -465,7 +468,7 @@ The within-set differences look different from those that would be expected
 from a randomized experiment.
 
 ```{r xbhs2, echo=TRUE}
-xbfm1 <- balanceTest(nhTrt ~ age + strata(fm1), data = dat)
+xbfm1 <- balanceTest(trtbin ~ age + strata(fm1), data = dat)
 xbfm1$results[, , ]
 xbfm1$overall
 ```
@@ -481,10 +484,10 @@ sample Normal approximation to this distribution.)
 setmeanDiffs <- dat %>%
   group_by(fm1) %>%
   summarise(
-    diffAboveHS = mean(age[nhTrt == 1]) - mean(age[nhTrt == 0]),
+    diffAboveHS = mean(age[trtbin == 1]) - mean(age[trtbin == 0]),
     nb = n(),
-    nTb = sum(nhTrt),
-    nCb = sum(1 - nhTrt),
+    nTb = sum(trtbin),
+    nCb = sum(1 - trtbin),
     hwt = (2 * (nCb * nTb) / (nTb + nCb))
   )
 setmeanDiffs
@@ -514,7 +517,7 @@ quantile(as.vector(absdist), seq(0, 1, .1))
 fm3 <- fullmatch(absdist + caliper(absdist, .08), data = dat)
 summary(fm3, min.controls = 0, max.controls = Inf)
 
-xb_1dim <- balanceTest(nhTrt ~ age + strata(fm1) + strata(pm1) + strata(fm2) + strata(fm3), data = dat)
+xb_1dim <- balanceTest(trtbin ~ age + strata(fm1) + strata(pm1) + strata(fm2) + strata(fm3), data = dat)
 
 xb_1dim$overall
 xb_1dim$results[, , ]
@@ -562,7 +565,7 @@ homicide rates (here using many covariates all together).
 
 ```{r}
 ## Create an R formulate object from vectors of variable names
-balfmla <- reformulate(c("nhPopD", "age"), response = "nhTrt")
+balfmla <- reformulate(c("nhPopD", "age"), response = "trtbin")
 
 ## Create a mahalanobis distance matrix (of rank transformed data)
 mhdist <- match_on(balfmla, data = dat, method = "rank_mahalanobis")
@@ -571,7 +574,7 @@ mhdist <- match_on(balfmla, data = dat, method = "rank_mahalanobis")
 ## terms of baseline homicide rate
 tmpHom03 <- dat$preY
 names(tmpHom03) <- rownames(dat)
-absdist <- match_on(tmpHom03, z = dat$nhTrt, data = dat)
+absdist <- match_on(tmpHom03, z = dat$trtbin, data = dat)
 absdist[1:3, 1:3]
 quantile(as.vector(absdist), seq(0, 1, .1))
 quantile(as.vector(mhdist), seq(0, 1, .1))
@@ -611,9 +614,9 @@ dat$classLowHi <- ifelse(dat$nhClass %in% c(2, 3), "hi", "lo")
 ```
 
 ```{r}
-dist2 <- psdist + exactMatch(nhTrt ~ classLowHi, data = dat)
+dist2 <- psdist + exactMatch(trtbin ~ classLowHi, data = dat)
 summary(dist2)
-## or mhdist <- match_on(balfmla,within=exactMatch(nhTrt~classLowHi,data=dat),data=dat,method="rank_mahalanobis")
+## or mhdist <- match_on(balfmla,within=exactMatch(trtbin~classLowHi,data=dat),data=dat,method="rank_mahalanobis")
 ## or fmEx1 <- fullmatch(update(balfmla,.~.+strata(classLowHi)),data=dat,method="rank_mahalanobis")
 fmEx1 <- fullmatch(dist2, data = dat, tol = .00001)
 summary(fmEx1, min.controls = 0, max.controls = Inf, propensity.model = theglm)
@@ -623,7 +626,7 @@ dat$fmEx1 <- fmEx1
 ## Exact Matching
 
 ```{r}
-ftable(Class = dat$classLowHi, Trt = dat$nhTrt, fmEx1, col.vars = c("Class", "Trt"))
+ftable(Class = dat$classLowHi, Trt = dat$trtbin, fmEx1, col.vars = c("Class", "Trt"))
 ```
 
 **Exact Matching**
