@@ -1,7 +1,7 @@
 <!-- Jake Bowers drafting this -->
 
 ```{r loadlibraries}
-install.packages("groundhog")
+# install.packages("groundhog")
 library("groundhog")
 
 pkgs <- c(
@@ -456,7 +456,7 @@ equivalent randomized experiments [@hansen2008cbs].
 The within-set differences look different from those that would be expected
 from a randomized experiment.
 
-```{r xbhs2, echo=TRUE}
+```{r, echo=TRUE}
 xbfm1 <- balanceTest(trtbin ~ age + strata(fm1) + strata(pm1) + strata(fm2), data = dat)
 xbfm1$results[, , ]
 xbfm1$overall
@@ -467,7 +467,7 @@ xbfm1$overall
 The within-set differences look different from those that would be expected
 from a randomized experiment.
 
-```{r xbhs2, echo=TRUE}
+```{r, echo=TRUE}
 xbfm1 <- balanceTest(trtbin ~ age + strata(fm1), data = dat)
 xbfm1$results[, , ]
 xbfm1$overall
