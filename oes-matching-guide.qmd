@@ -1,0 +1,525 @@
+---
+title: "OES Matching Guide"
+format: html
+editor: source
+---
+
+```{r set up}
+# install.packages("groundhog")
+library("groundhog")
+
+pkgs <- c(
+  "tidyverse", "RItools", "optmatch", "designmatch", "highs", "senstrat",
+  "sensemakr", "estimatr", "conflicted",
+  "broom",
+  "gtsummary"
+)
+groundhog.library(pkgs, "2023-12-1")
+
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::filter)
+```
+
+# Overview
+
+# Create Data
+
+To make this guide portable, we are making up a fake dataset.
+
+In this guide, we will use the following variables for treatment and outcome:
+
+-   `trtbin`: the binary version of a treatment, that is, you receive the treatment or do not
+
+-   `trtcont`: the continuous versions of a treatment
+
+-   `postY`: some outcome measured after treatment
+
+```{r }
+N <- 1000
+
+set.seed(12345)
+dat <- data.frame(id = 1:N) 
+dat <- dat %>% mutate(
+  sso = sample(1:10, size = N, replace = TRUE),
+  age = rnorm(n = N, mean = 45, sd = 10),
+  sex = factor(sample(c("M", "F"), size = N, replace = TRUE)),
+  race = factor(sample(c("A", "B", "W"), size = N, replace = TRUE, prob = c(.05, .15, .8))),
+  u = rnorm(n = N, mean = sso, sd = exp(sso)),
+  demog_latent0 = .5 * sd(u) * age + .2 * sd(u) * as.numeric(sex) + .2 * sd(u) * as.numeric(race) + u,
+  demog = (demog_latent0 - min(demog_latent0)) / (max(demog_latent0) - min(demog_latent0)),
+  edu = factor(sample(letters[1:8], size = N, prob = runif(n = 8, min = .1, max = pmax(.2, demog)), replace = TRUE)),
+  grade = sample(1:6, size = N, replace = TRUE),
+  pay = abs(rnorm(n = N, mean = (demog + .01) * 50000 + 50000, sd = 50000)),
+  tenure = rnorm(n = N, mean = 10, sd = 3),
+  perf = runif(n = N, min = 1, max = 10),
+  preY0 = abs(.2 * demog + rnorm(N)),
+  preY = (preY0 - min(preY0)) / (max(preY0) - min(preY0)),
+  trtcont = rnorm(n = N, mean = demog + preY, sd = sd(demog + preY)),
+  ##  trtbin = rbinom(n = N, size = 1, prob = pmin(.95,demog+preY)),
+  trtbin = as.numeric(trtcont >= quantile(trtcont, 2 / 3)),
+  postY = .2 * sd(preY) * trtbin + preY + rnorm(N)
+)
+```
+
+```{r }
+## optmatch will need row names
+row.names(dat) <- dat$id
+## Just verifying that trtbin is related to demog and preY
+table(dat$trtbin, exclude = c())
+with(dat, boxplot(demog ~ trtbin))
+with(dat, boxplot(preY ~ trtbin))
+
+## Check the relationship between demog and its components. Not really using demog directly below.
+## The idea is to ensure some relationships among the covariates using demog.
+lm1 <- lm(demog ~ sso + age + sex + race + edu, data = dat)
+summary(lm1)
+lm2 <- lm(preY ~ demog, data = dat)
+summary(lm2)
+
+cor(dat[, c("age", "demog", "pay", "preY")])
+```
+
+# Decide on elements of the design
+
+Our goal is to assess the effect of some observed intervention. We worry that a naive description of the relationship between intervention and outcome would not provide useful policy guidance because any such simple two-way relationship might contain other relationships (say, those driven by age or education). From a policy stand point we can change the intervention but we cannot change the education or age of people, so we want to remove the influence of age and education (among other relatively fixed characteristics of people) from our description. That is, we want to be able to **interpret** the relationship we calculate between intervention and outcome as reflecting, as much as possible, only the intervention and the outcome and not age and education.[^1]
+
+[^1]: Cite to Kinder and Palfrey on "interpretable comparisons".
+
+Say that we want to remove the effect of sex from the relationship between the intervention and the outcome. Many of us learn that we may account for this by simply adding this variable to the right hand side of the model along with the treatment. However, this structure would only account for the linear effect of that covariate on the outcome. What if the effect is not linear? What if it is quadratic or cubic? What if there is some interactive between the intervention and the covariate?
+
+The simplest and most transparent way to account for the effect of a covariate like sex would be to calculate the relationship between the intervention and the outcome only among men and only among women (imagining that our administrative data do not yet record non-binary genders). That is we will **stratify** by the sex to evaluate the effect of the binary treatment on the outcome.
+
+Below we show this most basic approach to using stratification to remove or control for the effects of a single variable with two levels as a way to introduce multivariate optimal matching later. What we see here is that the effect among men is different from the effect among women, and that the effect among each sex cannot be confounded by sex --- afterall the variables `sex` is held perfectly constant.
+
+```{r}
+with(dat, table(trtbin, sex, exclude = c()))
+lm_sexM <- lm(postY ~ trtbin, data = dat, subset = sex == "M")
+lm_sexF <- lm(postY ~ trtbin, data = dat, subset = sex == "F")
+coef(lm_sexM)[["trtbin"]]
+coef(lm_sexF)[["trtbin"]]
+bind_rows(
+  lm_sexM %>% broom::tidy() %>% mutate(strata = "M") %>%  select(strata, everything()),
+  lm_sexF %>% broom::tidy() %>% mutate(strata = "F") %>%  select(strata, everything())
+) %>% arrange(desc(term), strata)
+gt_lm_sexM <- lm_sexM %>% tbl_regression()
+gt_lm_sexF <- lm_sexF %>% tbl_regression()
+tbl_merge(
+    tbls = list(gt_lm_sexM, gt_lm_sexF),
+    tab_spanner = c("**Males**", "**Females**")
+  )
+```
+
+Now, these are two descriptions of the relationship of interest, but we tend to think about stratification as a way to *remove* confounding relationships from *a single overall* relationship. How to calculate this? We show this in steps here --- first doing it very simply by hand, and then using "fixed effects". We will return to this after creating matched designs since this is the same way that we will estimate effects after creating hundreds of matched pairs or sets later.
+
+We know how to analyze a block-randomized (or strata-randomized) experiment (see [@gerbergreen2012]): each block is a mini-experiment. We *estimate the ATE within each block* and *combine by weighting each block specific estimate*.
+
+The *block-size weight* produces an unbiased estimator in randomized experiments --- in an observational study we don't know about the bias since we don't exactly know how to repeat the study. The *precision weight* (aka the "fixed effects" weights) tends to produce smaller standard errors and confidence intervals but is biased in randomized experiments. In standard practice with matched designs we use the *precision weight* approach because (1) we tend to have matched sets that are nearly the same size (i.e. pairs) which means that the block-size weight and the precision-weight approaches tend to be nearly the same and (2) we can calculate the precision-weighted results quickly using the fact that "fixed effects" in linear regression models create precision weights.
+
+```{r weighting, echo=TRUE}
+## First collapse the data to the level of the strata and calculate weights
+dat_sets <- dat %>%
+  group_by(sex) %>%
+  summarize(
+    nb = n(),
+    ateb = mean(postY[trtbin == 1]) - mean(postY[trtbin == 0]),
+    prob_trt = mean(trtbin), ## proportion treated in the strata
+    nbwt = n() / nrow(dat), ## proportion of the total data in the strata
+    prec_wt = nbwt * prob_trt * (1 - prob_trt),
+  )
+
+dat_sets$prec_wt_norm <- with(dat_sets, prec_wt / sum(prec_wt))
+
+dat_sets %>% select(sex, nb, ateb, prob_trt, nbwt, prec_wt_norm)
+
+est_ate_nw <- with(dat_sets, sum(ateb * nbwt))
+est_ate_pw <- with(dat_sets, sum(ateb * prec_wt_norm))
+
+c(block_size_wt = est_ate_nw, precision_wt = est_ate_pw)
+```
+
+Strata-level weights can also be represented at the individual level --- and this allows us to use linear models (least squares) to produce block-weighted estimates of the overall average causal effect after "holding constant" sex.
+
+```{r echo=TRUE}
+## Now creating the weights at the individual level
+dat <- dat %>%
+  group_by(sex) %>%
+  mutate(
+    nb = n(),
+    mb = sum(trtbin),
+    ateb = mean(postY[trtbin == 1]) - mean(postY[trtbin == 0]),
+    prob_trt = mean(trtbin),
+    nbwt = (trtbin / prob_trt) + (1 - trtbin) / (1 - prob_trt),
+    prec_wt = nbwt * prob_trt * (1 - prob_trt)
+  ) %>%
+  ungroup()
+
+## Two ways to use the block-size weight
+est_ate1a <- difference_in_means(postY ~ trtbin, blocks = sex, data = dat)
+est_ate1b <- lm_robust(postY ~ trtbin, weights = nbwt, data = dat)
+est_ate1c <- lm(postY ~ trtbin, weights = nbwt, data = dat)
+
+## Three other ways to use the precision or harmonic weight
+est_ate2a <- lm_robust(postY ~ trtbin + sex, data = dat)
+est_ate2b <- lm_robust(postY ~ trtbin, fixed_effects = ~sex, data = dat)
+est_ate2c <- lm_robust(postY ~ trtbin, weights = prec_wt, data = dat)
+```
+
+Notice that we get the same result for the overall effect whether we first calculate differences of means within strata and then take a weighted average of those strata specific differences of means, or whether we hand off that job to least squares. The only difference here is whether we choose to weight only using the proportion of the data in the block, or whether we also want to take into account the proportion taking the intervention within the strata.
+
+```{r echo=TRUE}
+## Block-size weighted results
+c(est_ate_nw, coef(est_ate1a)[["trtbin"]], coef(est_ate1b)[["trtbin"]], coef(est_ate1c)[["trtbin"]])
+## Precision weighted results
+c(est_ate_pw, coef(est_ate2a)[["trtbin"]], coef(est_ate2b)[["trtbin"]], coef(est_ate2c)[["trtbin"]])
+```
+
+## Summary of the section
+
+So, we have seen that we can "control for" a single binary variable using stratification. We didn't need to work hard to evaluate the stratification --- after all, we just held sex perfectly constant within strata. And we were able to produce an estimate of an overall effect by calculating effects within strata and combining them via weighting. And we showed that we can use OLS for this purpose --- just as we would if we had a block-randomized experiment.
+
+What should we do if we have more than one variable? Or if those variables have more than a few values? We explain that below as we introduce optimal matching.
+
+# Create a design, evaluate and iterate if needed
+
+When we created our fake data we made two intervention variables, `trtbin` and `trtcont`, because we want to demonstrate how to use two kinds of approaches to stratification here: bipartite matching (which creates sets or pairs of people who differ in a binary variable (i.e. comparing those who received the intervention versus did not) and non-bipartite matching (which creates pairs of people who differ in levels of a variable that has more than two values such that each pair should have one person with a higher value and another person with a lower value).
+
+Imagine that we want to compare people who are similar in multiple demographic characteristics as well as baseline outcome (`preY`). We would like to *create a research design* where people are placed into strata where they are as similar as possible with other people along all of those characteristics. If we calculate effects within those strata, we know that we will have minimized the effects of those characteristics on the outcome even if we have not exactly eliminated them as we did above when we exactly controlled "male" versus "female". In the last decades, algorithms to create strata that minimize differences between people on those covariates have been implemented in relatively user-friendly software (see the list in [@rosenbaum2020modern]). In this guide we demonstrate the use of `optmatch` and `designmatch` because each uses a slightly different approach to the minimization problem (both are "optimal" because they solve problems by minimizing).
+
+We demonstrate here how to do this by (1) combining the many variables into single scores via *dimension reduction* and then using the optimal matching algorithms to find strata that minimize the within-strata distances between people on that score (say, using a Mahalanobis distance score and/or a propensity score) and (2) by directly constraining the algorithm (say, restricting research designs to only combine people with fewer than 10 years difference in age).
+
+## Bipartite Matching with Optmatch
+
+We will start with the task of comparing people based on their experience of a binary intervention (`trtbin`).
+
+### Dimension reduction
+
+We convert many columns into one column we reduce the dimensions of the dataset (to one column). We can use the idea of **multivariate distance** to produce distance matrices to minimize **multivariate distances**.
+
+We defer in-depth explanation of these scores to Chapter ?9? in [@rosenbaum2020book] for now. Here I create three different distance matrices: `abs_dist` which records the absolute difference in the pre-outcome between people in the treated versus control groups; `mh_dist` which records the differences in Mahalanobis distance (after transforming the covariates to ranks and scaling, see the [@rosenbaum2020book] section 9.3 on this); and `ps_dist` which records differences in "propensity score".
+
+```{r dists}
+## Scalar/Absolute differences in baseline outcome
+abs_dist <- match_on(trtbin ~ preY, data = dat, method = "euclidean")
+abs_dist[1:3, 1:4]
+abs(dat["1", "preY"] - dat["5", "preY"])
+summary(abs_dist)
+
+### Setup for multivariate distances
+covs <- c("sso", "age", "sex", "race", "edu", "grade", "pay", "tenure", "preY")
+cov_fmla <- reformulate(covs, response = "trtbin")
+
+## A multivariate distance score: Mahalanobis distance on rank transformed covariates
+mh_dist <- match_on(cov_fmla, data = dat, method = "rank_mahalanobis")
+mh_dist[1:3, 1:4]
+## The closest and farther people from person 1 in regards mahalanobis distance
+mh_dist[1, c("104", "213")]
+## person 213 is closer to person 1 in multivariate terms than person 104
+dat %>%
+  filter(id %in% c(1, 104, 213)) %>%
+  select(one_of(c("trtbin", "id", covs)))
+summary(mh_dist)
+
+## A multivariate distance score: Propensity score using a logistic regression model that shrinks coefficients toward zero
+## to avoid the common separation problem in logistic models
+## Not loading the arm package because it contains lots of stuff that we don't need
+psmod <- arm::bayesglm(cov_fmla, data = dat, family = binomial())
+## Inspect the coefs to make sure that none are too huge
+zapsmall(coef(psmod))
+ps_dist <- match_on(psmod, data = dat)
+ps_dist[1:3, 1:4]
+summary(ps_dist)
+```
+
+**Creating the stratification**
+
+Creating the stratification using the `pairmatch` and `fullmatch` commands in the optmatch package just requires that the researcher provide an appropriately formatted distance matrix to those functions.
+
+Here is a paired design. The `pairmatch` command creates an object that is a factor variable that indicates which individual belongs with which pair. Below we see person 1 (a person who experienced the intervention) is placed into a pair with person 442 (a person who did not experience the intervention). These people don't look extremely similar, so we may want to fine tune this design using other information.
+
+```{r pm1}
+## A paired design
+pm1 <- pairmatch(mh_dist, data = dat)
+summary(pm1)
+
+stopifnot(all.equal(names(pm1), row.names(dat)))
+dat$pm1 <- factor(pm1)
+
+dat %>%
+  filter(pm1 %in% c("1.1", "1.2")) %>%
+  select(one_of(c("pm1", "trtbin", "id", covs))) %>%
+  arrange(pm1, trtbin)
+```
+
+Below we show a fully-matched design in which no control units are excluded. We restrict this design to have no more than 1 treated unit per set and no more than 5 controls per set (we can make other decisions to generate a design that we like later: the decision to restrict the size of the sets has mostly to do with the fact the effective sample size of a stratified research design with two treatments is enhanced as we (a) get more strata and (b) the strata are more equal in size of treated versus controls. We can explain a lot more about this.)
+
+```{r fm1}
+## A full-matched design with no more than one treated unit per set and no more than 5 controls per set
+
+fm1 <- fullmatch(mh_dist, min.controls = 1, max.controls = 5, data = dat)
+summary(fm1, min.controls = 0, max.controls = Inf)
+
+stopifnot(all.equal(names(fm1), row.names(dat)))
+dat$fm1 <- factor(fm1)
+
+dat %>%
+  filter(fm1 %in% c("1.1", "1.10")) %>%
+  select(one_of(c("fm1", "trtbin", "id", covs))) %>%
+  arrange(fm1, trtbin)
+```
+
+In each case the strata (pairs or matched sets) are named with levels like "1.1" or "1.99" etc.. where these names are not numbers, but "1.1" means "group 1, first set". And in our case, here we only have one overall group so all of the sets start with `1`: when we use exact matching below the first element of the set name will change.
+
+### How to assess a matched design?
+
+Did either of those designs do a good job? Should we feel confident using them to remove the influence of the covariates? We have two ways to answer those questions.[^2]
+
+[^2]: Another question we should ask about a research design is whether it provides enough information to help us discern differences should those differences exist. We set aside this question of statistical power or information for later. From the perspective of stratified designs, statistical power or information or "effective sample size" is a function of not only number of total observations, but of the number of strata, and the variance of both the treatment and the outcomes within strata. In the case of a binary treatment, variance of the treatment, amounts to the proportion treated. In a matched design that creates pairs, these considerations go away --- the number of strata is maximized and each pair has exactly one treated and one control unit. When creating full matched designs --- with varying numbers of treated and controls per set --- these issues become more important.
+
+First, we can answer that by referring to what we know about the units and the theory of change and the alternative explanations that we are trying to engage. For example, imagine that we really must remove the effect of age from our comparisons in order for any reasonable interpretation of our analysis to shed light on the effect of the intervention itself and not on age. We might then calculate the difference in age within each set and ask whether any set has such a large difference in age that we could not credibly claim to have "Controlled for" age with this design overall.
+
+```{r echo=FALSE, out.width=".9\\textwidth"}
+library(gridExtra)
+dat_plot1 <- dat %>% select(age,trtbin,fm1) %>% 
+  group_by(fm1) %>%
+  mutate(agediff=abs(mean(age[trtbin==1]) - mean(age[trtbin==0])),
+         nb=n()) %>%
+  ungroup() %>%
+  mutate(fm1 = factor(fm1, levels = names(sort(tapply(agediff, fm1, mean),decreasing=TRUE))))
+dat_plot1$nostrata <- rep(1, nrow(dat_plot1))
+```
+
+For example, we could make a plot to show this information within sets versus raw differences from the fullmatch. Here, for example, we show the worst 100 sets in order of remaining difference in mean age between the treated and control observations from left to right. Notice that no set has nearly the age difference that we see overall (in the boxplot at the far right): without matching we would be comparing people who are `r min(dat$age)` with people who are `r max(dat$age)` whereas after matching the worse set has has a difference of `r max(dat_plot1$agediff)`.
+
+```{r makeplot1}
+bpfm1 <- ggplot(dat_plot1 %>% filter(agediff > quantile(agediff,.9)), aes(x = fm1, y = age)) +
+  geom_boxplot() +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red") +
+  geom_text(aes(x=fm1,y=min(age),label=nb))+
+  annotate("text",x = 0, y = min(dat_plot1$age), label="Set \n size")
+bpfm1 <- bpfm1 + scale_x_discrete(expand = expand_scale(add = c(2, 0.5)))
+bpfm1
+
+bporig <- ggplot(dat_plot1, aes(x = nostrata, y = age)) +
+  geom_boxplot() +
+  stat_summary(
+    fun = mean, geom = "point",
+    shape = 20, size = 3, color = "red", fill = "red"
+  )
+
+grid.arrange(bpfm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
+```
+
+We can further reason about these differences by looking at them more closely. Here we use the full matched design just for convenience. For example, we see that the worst matched set has a difference of 33 years --- including a 15 year old and a 49 year old. This might be a bad set depending on the context. Across the sets, we see that half of them differ by less than 5.8 years of age, and that 90% of the sets differ by less than about 13 years of age. Is this sign that we have done enough to remove the effects of age from the impact evaluation? That depends on context. Let us imagine for now that we are not satisfied with this design --- that we'd like to have smaller differences on age. But that we also are worried about some of the other variables. And, in fact we'd like to evaluate the design as a whole. How might we do that?
+
+```{r sdiffs, echo=FALSE}
+rawmndiffs <- with(dat, mean(age[trtbin == 1]) - mean(age[trtbin == 0]))
+setdiffsfm1 <- dat %>%
+  group_by(fm1) %>%
+  summarize(
+    mn_age_diffs =
+      mean(age[trtbin == 1]) - mean(age[trtbin == 0]),
+    mn_age= mean(age),
+    min_age= min(age),
+    max_age= max(age)
+  )
+
+setdiffsfm1 %>% arrange(desc(abs(mn_age_diffs))) %>% head()
+## summary(setdiffsfm1$mn_age_diffs)
+quantile(abs(setdiffsfm1$mn_age_diffs), seq(0,1,.1))
+```
+
+## How to assess stratified research designs
+
+We know that in **designs randomized within strata**:
+
+-   Randomization balances covariate distributions between treated and control groups. It does not make them identical.
+-   We can repeat the known randomization to check the randomization procedure (mostly useful if there is a long chain of communication between the random number generator and the field). **We know how strata weighted mean differences in covariates would vary in an experiment.**
+-   **Randomization does not imply exact equivalence. Large differences in covariates easily arise in small experiments.**
+
+This means that we can compare **stratified observational studies** to equivalent randomized experiments [@hansen2008cbs].
+
+## Evaluate the design: Compare to a randomized experiment.
+
+The within-set differences look different from those that would be expected from a randomized experiment.
+
+```{r, echo=TRUE}
+xbfm1 <- balanceTest(trtbin ~ age + strata(fm1) + strata(pm1) + strata(fm2), data = dat)
+xbfm1$results[, , ]
+xbfm1$overall
+```
+
+## Evaluate the design: Compare to a randomized experiment.
+
+The within-set differences look different from those that would be expected from a randomized experiment.
+
+```{r, echo=TRUE}
+xbfm1 <- balanceTest(trtbin ~ age + strata(fm1), data = dat)
+xbfm1$results[, , ]
+xbfm1$overall
+```
+
+## What is balanceTest doing?
+
+It compares the strata-weighted average of within-strata differences to that which would be expected if we were to repeat an experiment with the same stratified design and same covariate values (and `balanceTest` uses a large sample Normal approximation to this distribution.)
+
+```{r xbagain, echo=TRUE}
+setmeanDiffs <- dat %>%
+  group_by(fm1) %>%
+  summarise(
+    diffAboveHS = mean(age[trtbin == 1]) - mean(age[trtbin == 0]),
+    nb = n(),
+    nTb = sum(trtbin),
+    nCb = sum(1 - trtbin),
+    hwt = (2 * (nCb * nTb) / (nTb + nCb))
+  )
+setmeanDiffs
+```
+
+## What is balanceTest doing with multiple sets/blocks?
+
+The test statistic is a weighted average of the set-specific differences (*same approach as we would use to test the null in a block-randomized experiment*)
+
+```{r wtmns, echo=TRUE}
+## The descriptive mean difference using block-size weights
+with(setmeanDiffs, sum(diffAboveHS * nTb / sum(nTb)))
+## The mean diff used as the observed value in the testing
+with(setmeanDiffs, sum(diffAboveHS * hwt / sum(hwt)))
+## Compare to balanceTest output
+xbfm1$results[, , "fm1"]
+```
+
+## Something new: Calipers
+
+Maybe we would prefer to limit the worse matches?
+
+```{r caliper_one_dim, echo=TRUE}
+quantile(as.vector(absdist), seq(0, 1, .1))
+
+fm3 <- fullmatch(absdist + caliper(absdist, .08), data = dat)
+summary(fm3, min.controls = 0, max.controls = Inf)
+
+xb_1dim <- balanceTest(trtbin ~ age + strata(fm1) + strata(pm1) + strata(fm2) + strata(fm3), data = dat)
+
+xb_1dim$overall
+xb_1dim$results[, , ]
+```
+
+### Tools to improve design
+
+#### Calipers
+
+The optmatch package allows calipers (which forbids certain pairs from being matched).[^3] Here, for example, we forbid comparisons which differ by more than 2 propensity score standardized distances.
+
+[^3]: You can implement penalties by hand.
+
+```{r}
+## First inspect the distance matrix itself: how are the distances distributed?
+quantile(as.vector(psdist), seq(0, 1, .1))
+## Next, apply a caliper (setting entries to Infinite)
+psdistCal <- psdist + caliper(psdist, 2)
+as.matrix(psdist)[5:10, 5:10]
+as.matrix(psdistCal)[5:10, 5:10]
+summary(psdistCal)
+```
+
+## Calipers
+
+The optmatch package allows calipers (which forbid certain pairs from being matched).[^4] Here, for example, we forbid comparisons which differ by more than 2 standard deviations on the propensity score. (Notice that we also use the `propensity.model` option to `summary` here to get a quick look at the balance test:)
+
+[^4]: You can implement penalties by hand.
+
+```{r}
+fmCal1 <- fullmatch(psdist + caliper(psdist, 2), data = dat, tol = .00001)
+summary(fmCal1, min.controls = 0, max.controls = Inf, propensity.model = theglm)
+pmCal1 <- pairmatch(psdist + caliper(psdist, 2), data = dat, remove.unmatchables = TRUE)
+summary(pmCal1, propensity.model = theglm)
+```
+
+## Calipers
+
+Another example: We may want to match on mahalanobis distance but disallow any pairs with extreme propensity distance and/or extreme differences in baseline homicide rates (here using many covariates all together).
+
+```{r}
+## Create an R formulate object from vectors of variable names
+balfmla <- reformulate(c("nhPopD", "age"), response = "trtbin")
+
+## Create a mahalanobis distance matrix (of rank transformed data)
+mhdist <- match_on(balfmla, data = dat, method = "rank_mahalanobis")
+
+## Now make a matrix recording absolute differences between neighborhoods in
+## terms of baseline homicide rate
+tmpHom03 <- dat$preY
+names(tmpHom03) <- rownames(dat)
+absdist <- match_on(tmpHom03, z = dat$trtbin, data = dat)
+absdist[1:3, 1:3]
+quantile(as.vector(absdist), seq(0, 1, .1))
+quantile(as.vector(mhdist), seq(0, 1, .1))
+## Now create a new distance matrix using two calipers:
+distCal <- psdist + caliper(mhdist, 9) + caliper(absdist, 2)
+as.matrix(distCal)[5:10, 5:10]
+## Compare to:
+as.matrix(mhdist)[5:10, 5:10]
+```
+
+## Calipers
+
+Now, use this new matrix for the creation of stratified designs --- but possibly excluding some units (also showing here the `tol` argument. The version with the tighter tolerance produces a solution with smaller overall distances)
+
+```{r}
+fmCal2a <- fullmatch(distCal, data = dat, tol = .001)
+summary(fmCal2a, min.controls = 0, max.controls = Inf)
+fmCal2b <- fullmatch(distCal, data = dat, tol = .00001)
+summary(fmCal2b, min.controls = 0, max.controls = Inf, propensity.model = theglm)
+
+dat$fmCal2a <- fmCal2a
+dat$fmCal2b <- fmCal2b
+
+fmCal2a_dists <- matched.distances(fmCal2a, distCal)
+fmCal2b_dists <- matched.distances(fmCal2b, distCal)
+
+mean(unlist(fmCal2a_dists))
+mean(unlist(fmCal2b_dists))
+```
+
+## Exact Matching
+
+We often have covariates that are categorical/nominal and for which we really care about strong balance. One approach to solve this problem is match **exactly** on one or more of such covariates. If `fullmatch` or `match_on` is going slow, this is also an approach to speed things up.
+
+```{r echo=FALSE}
+dat$classLowHi <- ifelse(dat$nhClass %in% c(2, 3), "hi", "lo")
+```
+
+```{r}
+dist2 <- psdist + exactMatch(trtbin ~ classLowHi, data = dat)
+summary(dist2)
+## or mhdist <- match_on(balfmla,within=exactMatch(trtbin~classLowHi,data=dat),data=dat,method="rank_mahalanobis")
+## or fmEx1 <- fullmatch(update(balfmla,.~.+strata(classLowHi)),data=dat,method="rank_mahalanobis")
+fmEx1 <- fullmatch(dist2, data = dat, tol = .00001)
+summary(fmEx1, min.controls = 0, max.controls = Inf, propensity.model = theglm)
+print(fmEx1, grouped = T)
+dat$fmEx1 <- fmEx1
+```
+
+## Exact Matching
+
+```{r}
+ftable(Class = dat$classLowHi, Trt = dat$trtbin, fmEx1, col.vars = c("Class", "Trt"))
+```
+
+**Exact Matching**
+
+**Calipers**
+
+**Missing data**
+
+### Using designmatch
+
+## Non-bipartite matching using designmatch
+
+## Estimate effects
+
+### After bipartite matching
+
+### After non-bipartite matching
+
+## Assess sensitivity to unobserved confounders
