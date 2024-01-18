@@ -9,18 +9,27 @@ editor: source
 library("groundhog")
 
 pkgs <- c(
-  "tidyverse", "RItools", "optmatch", "designmatch", "highs", "senstrat",
-  "sensemakr", "estimatr", "conflicted",
+  "tidyverse",
+  "RItools",
+  "optmatch",
+  "designmatch",
+  "highs",
+  "senstrat",
+  "sensemakr",
+  "estimatr",
+  "conflicted",
   "broom",
-  "gtsummary"
+  "gtsummary",
+  "knitr",
+  "kableExtra",
+  "ggthemes"
 )
-
+ 
 
 conflicted::conflicts_prefer(dplyr::select)
 conflicted::conflicts_prefer(dplyr::filter)
 
 groundhog.library(pkgs, "2023-12-1")
-
 ```
 
 # Overview
@@ -38,6 +47,7 @@ In this guide, we will use the following variables for treatment and outcome:
 -   `postY`: some outcome measured after treatment
 
 ```{r }
+# Should we use DeclareDesign structure for this.
 N <- 1000
 
 set.seed(12345)
@@ -67,11 +77,41 @@ dat <- dat %>% mutate(
 ```{r }
 ## optmatch will need row names
 row.names(dat) <- dat$id
-## Just verifying that trtbin is related to demog and preY
-table(dat$trtbin, exclude = c())
-with(dat, boxplot(demog ~ trtbin))
-with(dat, boxplot(preY ~ trtbin))
+```
 
+
+```{r }
+## Just verifying that trtbin is related to demog and preY
+dat %>%
+  count(trtbin) %>% 
+  kable()
+  
+```
+
+
+```{r }
+with(dat, boxplot(demog ~ trtbin))
+dat %>% 
+  ggplot(
+    aes(x = factor(trtbin), y = demog)
+  ) +
+  geom_boxplot() +
+  theme_few()
+```
+
+
+```{r }
+with(dat, boxplot(preY ~ trtbin))
+dat %>% 
+  ggplot(
+    aes(x = factor(trtbin), y = preY)
+  ) +
+  geom_boxplot() +
+  theme_few()
+```
+
+
+```{r }
 ## Check the relationship between demog and its components. Not really using demog directly below.
 ## The idea is to ensure some relationships among the covariates using demog.
 lm1 <- lm(demog ~ sso + age + sex + race + edu, data = dat)
@@ -126,7 +166,11 @@ Now, these are two descriptions of the relationship of interest, but we tend to 
 
 We know how to analyze a block-randomized (or strata-randomized) experiment (see [@gerbergreen2012]): each block is a mini-experiment. We *estimate the ATE within each block* and *combine by weighting each block specific estimate*.
 
-The *block-size weight* produces an unbiased estimator in randomized experiments --- in an observational study we don't know about the bias since we don't exactly know how to repeat the study. The *precision weight* (aka the "fixed effects" weights) tends to produce smaller standard errors and confidence intervals but is biased in randomized experiments. In standard practice with matched designs we use the *precision weight* approach because (1) we tend to have matched sets that are nearly the same size (i.e. pairs) which means that the block-size weight and the precision-weight approaches tend to be nearly the same and (2) we can calculate the precision-weighted results quickly using the fact that "fixed effects" in linear regression models create precision weights.
+The *block-size weight* produces an unbiased estimator in randomized experiments --- in an observational study we don't know about the bias since we don't exactly know how to repeat the study. The *precision weight* (aka the "fixed effects" weights) tends to produce smaller standard errors and confidence intervals but is biased in randomized experiments. In standard practice with matched designs we use the *precision weight* approach because
+
+1.  we tend to have matched sets that are nearly the same size (i.e. pairs) which means that the block-size weight and the precision-weight approaches tend to be nearly the same and
+
+2.  we can calculate the precision-weighted results quickly using the fact that "fixed effects" in linear regression models create precision weights.
 
 ```{r weighting, echo=TRUE}
 ## First collapse the data to the level of the strata and calculate weights
@@ -538,3 +582,10 @@ We often have covariates that are categorical/nominal and for which we really ca
 ### After non-bipartite matching
 
 ## Assess sensitivity to unobserved confounders
+
+## Appendix
+
+```{r}
+
+```
+
