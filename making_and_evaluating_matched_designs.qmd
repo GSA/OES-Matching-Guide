@@ -1,23 +1,74 @@
-<!-- Jake Bowers drafting this -->
+---
+title: The OES Guide to Making and Evaluating Matched Designs (DRAFT!!)
+author: Jake Bowers and
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+bibliography: big.bib
+execute:
+  echo: true
+  output: true
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+    code-fold: true
+    fig-caption: true
+    code-links:
+      - text: Github
+        icon: github
+        repo: https://github.com/bowers-illinois-edu/OES-Matching-Guide
+---
 
 ```{r loadlibraries}
-if(!require(groundhog)){
-    install.packages("groundhog")
-    library(groundhog)
+if(!require(renv)){
+    install.packages("renv",method="wget")
 }
-
-pkgs <- c(
-  "tidyverse", "RItools", "optmatch", "designmatch", "highs", "senstrat",
-  "sensemakr", "estimatr", "conflicted","coin"
-)
-groundhog.library(pkgs, "2024-12-1")
-
+library(tidyverse)
+library(RItools)
+library(optmatch)
+library(designmatch)
+library(highs)
+library(coin)
+library(conflicted)
+library(estimatr)
+library(senstrat)
+library(sensemakr)
 conflicts_prefer(dplyr::select)
 conflicts_prefer(dplyr::filter)
 ```
 
 # Overview
 
+We create matched research designs to address alternative explanations. Say we
+have a policy intervention, $Z$, that we code as $Z_i=0$ for people, $i$, who
+did not experience the intervention and $Z_i=1$, and an outcome that we observe
+for each person, $Y_i$. We would like to know whether $Y_i|Z_i=1$ is different
+from $Y_i|Z_i=0$ because of $Z_i$ rather than some other factor, $x_i$. Say the
+intervention is a job training program and the outcome is income and we see
+that people who took the job training program ($Z_i=1$) have higher incomes
+than people who did not. One explanation for the difference could be that the
+job training program help people earn more. An alternative explanation might be
+that that older people took the job training program and, because they have
+more workforce experience, tend to earn higher wages than younger people. We
+can address this alternative explanation by creating strata of people who have
+the same age ($X_i$) and only comparing incomes between those who took the
+training program and those who did not among people of the same age. For
+example, we might write the difference in average income between job training
+alumni and those who did not take job training among people who are 18 years
+old as $\bar{Y}=(\bar{Y}|Z=1,X=18)-(\bar{Y}|Z=0,X=18)$. Within that strata or
+set of 18 year olds, age cannot matter (unless age differences in month or week
+matter). If age differences tend to only matter if the differences in age are a
+matter of years, then we can create a research design that **adjusts for this
+alternative explanation** by restricting our comparisons to people who are the
+same age. In this memo, we discuss generalizations of this basic approach ---
+from exactly matching on a single variable to exclude alternative explanations
+based on that variable alone, to matching on a number of variables all at once
+in the hopes that we might set aside a number of alternative explanations all
+together. Throughout all of the matching work we do is a version of research
+design --- it can and should be done without knowledge of the values of the
+outcome variables. We show code here. Those who wish to follow up on the
+general ideas presented here might like to see @rosenbaum2020modern,
+@rosenbaum2020book.
 
 # Create Data
 
@@ -25,7 +76,6 @@ To make this guide portable, we are making up a fake dataset.
 
 ```{r makedata}
 N <- 1000
-
 set.seed(12345)
 dat <- data.frame(id = 1:N)
 dat <- dat %>% mutate(
@@ -79,7 +129,7 @@ remove the influence of age and education (among other relatively fixed
 characteristics of people) from our description. That is, we want to be able to
 **interpret** the relationship we calculate between intervention and outcome as
 reflecting, as much as possible, only the intervention and the outcome and not
-age and education.^[Cite to Kinder and Palfrey on "interpretable comparisons".]
+age and education.^[We borrow the idea of "interpretable comparisons" from @kinder1993behalf]
 
 Say that we want to remove the effect of sex from the relationship between the
 intervention and the outcome. The simplest and most transparent way to do this
@@ -89,7 +139,10 @@ not yet record non-binary gender).
 
 Below we show this most basic approach to using stratification to remove or
 control for the effects of a single variable with two levels as a way to
-introduce multivariate optimal matching later. What we see here is that the effect among men is different from the effect among women, and that the effect among each sex cannot be confounded by sex --- afterall the variables `sex` is held perfectly constant.
+introduce multivariate optimal matching later. What we see here is that the
+effect among men is different from the effect among women, and that the effect
+among each sex cannot be confounded by sex --- afterall the variables `sex` is
+held perfectly constant.
 
 ```{r}
 with(dat, table(trtbin, sex, exclude = c()))
@@ -108,7 +161,7 @@ that we will estimate effects after creating hundreds of matched pairs or sets
 later.
 
 We know how to analyze a block-randomized (or strata-randomized) experiment
-(see [@gerbergreen2012]): each block is a mini-experiment. We *estimate the ATE
+(see [@gerber2012field]): each block is a mini-experiment. We *estimate the ATE
 within each block* and *combine by weighting each block specific estimate*.
 
 The *block-size weight* produces an unbiased estimator in randomized
@@ -123,7 +176,7 @@ to be nearly the same and (2) we can calculate the precision-weighted results
 quickly using the fact that "fixed effects" in linear regression models create
 precision weights.
 
-```{r weighting, echo=TRUE}
+```{r weighting}
 ## First collapse the data to the level of the strata and calculate weights
 dat_sets <- dat %>%
   group_by(sex) %>%
@@ -149,7 +202,7 @@ Strata-level weights can also be represented at the individual level --- and
 this allows us to use linear models (least squares) to produce block-weighted
 estimates of the overall average causal effect after "holding constant" sex.
 
-```{r echo=TRUE}
+```{r make_strata_level_data}
 ## Now creating the weights at the individual level
 dat <- dat %>%
   group_by(sex) %>%
@@ -181,7 +234,7 @@ to least squares. The only difference here is whether we choose to weight only
 using the proportion of the data in the block, or whether we also want to take
 into account the proportion taking the intervention within the strata.
 
-```{r echo=TRUE}
+```{r}
 ## Block-size weighted results
 c(est_ate_nw, coef(est_ate1a)[["trtbin"]], coef(est_ate1b)[["trtbin"]], coef(est_ate1c)[["trtbin"]])
 ## Precision weighted results
@@ -319,7 +372,7 @@ we like later: the decision to restrict the size of the sets has mostly to do
 with the fact the effective sample size of a stratified research design with
 two treatments is enhanced as we (a) get more strata and (b) the strata are
 more equal in size of treated versus controls. We can explain a lot more about
-this.) 
+this.)
 
 ```{r fm1}
 ## A full-matched design with no more than one treated unit per set and no more than 5 controls per set
@@ -341,7 +394,7 @@ In each case the strata (pairs or matched sets) are named with levels like
 1, first set". And in our case, here we only have one overall group so all of
 the sets start with `1`: when we use exact matching below the first element of
 the set name will change.
- 
+
 ### How to assess a matched design?
 
 Did either of those designs do a good job? Should we feel confident using them
@@ -371,7 +424,7 @@ such a large difference in age that we could not credibly claim to have
 
 ```{r echo=FALSE, out.width=".9\\textwidth"}
 library(gridExtra)
-dat_plot1 <- dat %>% select(age,trtbin,fm1) %>% 
+dat_plot1 <- dat %>% select(age,trtbin,fm1) %>%
   group_by(fm1) %>%
   mutate(agediff=abs(mean(age[trtbin==1]) - mean(age[trtbin==0])),
          nb=n()) %>%
@@ -456,21 +509,15 @@ equivalent randomized experiments [@hansen2008cbs].
 ## Evaluate the design: Compare to a randomized experiment.
 
 The within-set differences look different from those that would be expected
-from a randomized experiment.
+from a randomized experiment.^[If you look at the documentation for
+`balanceTest` you'll that it can also handle clustered data as well as other
+options.]
 
-```{r, echo=TRUE}
-xbfm1 <- balanceTest(trtbin ~ age + strata(fm1) + strata(pm1) + strata(fm2), data = dat)
-xbfm1$results[, , ]
-xbfm1$overall
-```
-
-
-## Evaluate the design: Compare to a randomized experiment.
-The within-set differences look different from those that would be expected
-from a randomized experiment.
-
-```{r, echo=TRUE}
-xbfm1 <- balanceTest(trtbin ~ age + strata(fm1), data = dat)
+```{r compare_bal}
+#| eval: true
+#| echo: true
+balfmla_new <- stats::update(cov_fmla,.~.+ strata(fm1)+strata(pm1))
+xbfm1 <- balanceTest(balfmla_new, data = dat, p.adjust.method="holm")
 xbfm1$results[, , ]
 xbfm1$overall
 ```
@@ -486,7 +533,7 @@ sample Normal approximation to this distribution.)
 setmeanDiffs <- dat %>%
   group_by(fm1) %>%
   summarise(
-    diffAboveHS = mean(age[trtbin == 1]) - mean(age[trtbin == 0]),
+    diffage = mean(age[trtbin == 1]) - mean(age[trtbin == 0]),
     nb = n(),
     nTb = sum(trtbin),
     nCb = sum(1 - trtbin),
@@ -502,9 +549,9 @@ approach as we would use to test the null in a block-randomized experiment*)
 
 ```{r wtmns, echo=TRUE}
 ## The descriptive mean difference using block-size weights
-with(setmeanDiffs, sum(diffAboveHS * nTb / sum(nTb)))
+with(setmeanDiffs, sum(diffage * nTb / sum(nTb)))
 ## The mean diff used as the observed value in the testing
-with(setmeanDiffs, sum(diffAboveHS * hwt / sum(hwt)))
+with(setmeanDiffs, sum(diffage * hwt / sum(hwt)))
 ## Compare to balanceTest output
 xbfm1$results[, , "fm1"]
 ```
@@ -513,16 +560,17 @@ xbfm1$results[, , "fm1"]
 
 Maybe we would prefer to limit the worse matches?
 
-```{r caliper_one_dim, echo=TRUE}
-quantile(as.vector(absdist), seq(0, 1, .1))
+```{r caliper_one_dim}
+quantile(as.vector(abs_dist), seq(0, 1, .1))
 
-fm3 <- fullmatch(absdist + caliper(absdist, .08), data = dat)
-summary(fm3, min.controls = 0, max.controls = Inf)
+fm2 <- fullmatch(abs_dist + caliper(abs_dist, .08), data = dat)
+summary(fm2, min.controls = 0, max.controls = Inf)
 
-xb_1dim <- balanceTest(trtbin ~ age + strata(fm1) + strata(pm1) + strata(fm2) + strata(fm3), data = dat)
+balfmla_new2 <- stats::update(balfmla_new,.~.+ strata(fm2))
+xb2 <- balanceTest(balfmla_new2, data = dat, p.adjust.method="holm")
 
-xb_1dim$overall
-xb_1dim$results[, , ]
+xb2$overall
+xb2$results[, , ]
 ```
 
 
@@ -536,12 +584,12 @@ The optmatch package allows calipers (which forbids certain pairs from being mat
 
 ```{r}
 ## First inspect the distance matrix itself: how are the distances distributed?
-quantile(as.vector(psdist), seq(0, 1, .1))
+quantile(as.vector(ps_dist), seq(0, 1, .1))
 ## Next, apply a caliper (setting entries to Infinite)
-psdistCal <- psdist + caliper(psdist, 2)
-as.matrix(psdist)[5:10, 5:10]
-as.matrix(psdistCal)[5:10, 5:10]
-summary(psdistCal)
+ps_distCal <- ps_dist + caliper(ps_dist, 2)
+as.matrix(ps_dist)[5:10, 5:10]
+as.matrix(ps_distCal)[5:10, 5:10]
+summary(ps_distCal)
 ```
 ## Calipers
 
@@ -552,10 +600,10 @@ score. (Notice that we also use the `propensity.model` option to `summary` here
 to get a quick look at the balance test:)
 
 ```{r}
-fmCal1 <- fullmatch(psdist + caliper(psdist, 2), data = dat, tol = .00001)
-summary(fmCal1, min.controls = 0, max.controls = Inf, propensity.model = theglm)
-pmCal1 <- pairmatch(psdist + caliper(psdist, 2), data = dat, remove.unmatchables = TRUE)
-summary(pmCal1, propensity.model = theglm)
+fmCal1 <- fullmatch(ps_dist + caliper(ps_dist, 2), data = dat, tol = .00001)
+summary(fmCal1, min.controls = 0, max.controls = Inf, propensity.model = psmod)
+pmCal1 <- pairmatch(ps_dist + caliper(ps_dist, 2), data = dat, remove.unmatchables = TRUE)
+summary(pmCal1, propensity.model = psmod)
 ```
 
 ## Calipers
@@ -567,21 +615,21 @@ homicide rates (here using many covariates all together).
 
 ```{r}
 ## Create an R formulate object from vectors of variable names
-balfmla <- reformulate(c("nhPopD", "age"), response = "trtbin")
+balfmla <- reformulate(c("tenure", "age"), response = "trtbin")
 
 ## Create a mahalanobis distance matrix (of rank transformed data)
 mhdist <- match_on(balfmla, data = dat, method = "rank_mahalanobis")
 
 ## Now make a matrix recording absolute differences between neighborhoods in
 ## terms of baseline homicide rate
-tmpHom03 <- dat$preY
-names(tmpHom03) <- rownames(dat)
-absdist <- match_on(tmpHom03, z = dat$trtbin, data = dat)
-absdist[1:3, 1:3]
-quantile(as.vector(absdist), seq(0, 1, .1))
+tmppreY <- dat$preY
+names(tmppreY) <- rownames(dat)
+abs_dist <- match_on(tmppreY, z = dat$trtbin, data = dat)
+abs_dist[1:3, 1:3]
+quantile(as.vector(abs_dist), seq(0, 1, .1))
 quantile(as.vector(mhdist), seq(0, 1, .1))
 ## Now create a new distance matrix using two calipers:
-distCal <- psdist + caliper(mhdist, 9) + caliper(absdist, 2)
+distCal <- ps_dist + caliper(mhdist, 9) + caliper(abs_dist, 2)
 as.matrix(distCal)[5:10, 5:10]
 ## Compare to:
 as.matrix(mhdist)[5:10, 5:10]
@@ -595,7 +643,7 @@ Now, use this new matrix for the creation of stratified designs --- but possibly
 fmCal2a <- fullmatch(distCal, data = dat, tol = .001)
 summary(fmCal2a, min.controls = 0, max.controls = Inf)
 fmCal2b <- fullmatch(distCal, data = dat, tol = .00001)
-summary(fmCal2b, min.controls = 0, max.controls = Inf, propensity.model = theglm)
+summary(fmCal2b, min.controls = 0, max.controls = Inf, propensity.model = psmod)
 
 dat$fmCal2a <- fmCal2a
 dat$fmCal2b <- fmCal2b
@@ -612,23 +660,23 @@ mean(unlist(fmCal2b_dists))
 We often have covariates that are categorical/nominal and for which we really care about strong balance. One approach to solve this problem is match **exactly** on one or more of such covariates. If `fullmatch` or `match_on` is going slow, this is also an approach to speed things up.
 
 ```{r echo=FALSE}
-dat$classLowHi <- ifelse(dat$nhClass %in% c(2, 3), "hi", "lo")
+dat$gradeLowHi <- ifelse(dat$grade %in% c(4,5,6), "hi", "lo")
 ```
 
 ```{r}
-dist2 <- psdist + exactMatch(trtbin ~ classLowHi, data = dat)
+dist2 <- ps_dist + exactMatch(trtbin ~ gradeLowHi, data = dat)
 summary(dist2)
-## or mhdist <- match_on(balfmla,within=exactMatch(trtbin~classLowHi,data=dat),data=dat,method="rank_mahalanobis")
-## or fmEx1 <- fullmatch(update(balfmla,.~.+strata(classLowHi)),data=dat,method="rank_mahalanobis")
+## or mhdist <- match_on(balfmla,within=exactMatch(trtbin~gradeLowHi,data=dat),data=dat,method="rank_mahalanobis")
+## or fmEx1 <- fullmatch(update(balfmla,.~.+strata(gradeLowHi)),data=dat,method="rank_mahalanobis")
 fmEx1 <- fullmatch(dist2, data = dat, tol = .00001)
-summary(fmEx1, min.controls = 0, max.controls = Inf, propensity.model = theglm)
+summary(fmEx1, min.controls = 0, max.controls = Inf, propensity.model = psmod)
 print(fmEx1, grouped = T)
 dat$fmEx1 <- fmEx1
 ```
 ## Exact Matching
 
 ```{r}
-ftable(Class = dat$classLowHi, Trt = dat$trtbin, fmEx1, col.vars = c("Class", "Trt"))
+ftable(grade = dat$gradeLowHi, Trt = dat$trtbin, fmEx1, col.vars = c("grade", "Trt"))
 ```
 
 **Exact Matching**
@@ -650,8 +698,15 @@ ftable(Class = dat$classLowHi, Trt = dat$trtbin, fmEx1, col.vars = c("Class", "T
 
 ## Assess sensitivity to unobserved confounders
 
+```{r}
+library(senstrat)
+library(sensemakr)
+```
 
 
 
+
+
+# References
 
 
