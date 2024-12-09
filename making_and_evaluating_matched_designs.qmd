@@ -11,7 +11,7 @@ format:
     toc: true
     number-sections: true
     embed-resources: true
-    code-fold: true
+    code-fold: false
     fig-caption: true
     code-links:
       - text: Github
@@ -41,40 +41,62 @@ conflicts_prefer(dplyr::filter)
 
 We create matched research designs to address alternative explanations. Say we
 have a policy intervention, $Z$, that we code as $Z_i=0$ for people, $i$, who
-did not experience the intervention and $Z_i=1$, and an outcome that we observe
-for each person, $Y_i$. We would like to know whether $Y_i|Z_i=1$ is different
-from $Y_i|Z_i=0$ because of $Z_i$ rather than some other factor, $x_i$. Say the
-intervention is a job training program and the outcome is income and we see
-that people who took the job training program ($Z_i=1$) have higher incomes
-than people who did not. One explanation for the difference could be that the
-job training program help people earn more. An alternative explanation might be
-that that older people took the job training program and, because they have
-more workforce experience, tend to earn higher wages than younger people. We
-can address this alternative explanation by creating strata of people who have
-the same age ($X_i$) and only comparing incomes between those who took the
-training program and those who did not among people of the same age. For
+did not experience the intervention and $Z_i=1$ for those who did experience
+the intervention, and an outcome that we observe for each person, $Y_i$. We
+would like to know whether the outcome among people who experienced the
+intervention  ($Y_i|Z_i=1$) is different from the outcome among those who did
+not experience the intervention  ($Y_i|Z_i=0$) **because of the intervention
+rather than some other factor, x_i**. A matched design will only compare
+$Y_i|Z_i=1$ with $Y_i|Z_i=0$ **within strata of people who are similar on their
+values of $x_i$ in an effort to set aside $x_i$ as an explanation of the
+difference in outcomes.**
+
+For example, say the intervention is a job training program and the outcome is
+income and we see that people who took the job training program have higher
+incomes than people who did not. One explanation for the difference could be
+that the job training program helped people earn more. An alternative
+explanation might be that that older people took the job training program and,
+because they have more workforce experience tend to earn higher wages than
+younger people and were also more likely to sign up for the job training
+program. We can address this alternative explanation by creating strata of
+people who have the same age and only comparing incomes between those who took
+the training program and those who did not among people of the same age. For
 example, we might write the difference in average income between job training
 alumni and those who did not take job training among people who are 18 years
-old as $\bar{Y}=(\bar{Y}|Z=1,X=18)-(\bar{Y}|Z=0,X=18)$. Within that strata or
-set of 18 year olds, age cannot matter (unless age differences in month or week
+old as $\bar{Y}=(\bar{Y}|Z=1,X=18)-(\bar{Y}|Z=0,X=18)$. Within that strata of
+18 year olds, there are no differences in age. So, comparisons in income
+between those with the job training and without cannot be interepreted as
+arising from differences in age (unless age differences in month or week
 matter). If age differences tend to only matter if the differences in age are a
 matter of years, then we can create a research design that **adjusts for this
 alternative explanation** by restricting our comparisons to people who are the
-same age. In this memo, we discuss generalizations of this basic approach ---
-from exactly matching on a single variable to exclude alternative explanations
-based on that variable alone, to matching on a number of variables all at once
-in the hopes that we might set aside a number of alternative explanations all
-together. Throughout all of the matching work we do is a version of research
-design --- it can and should be done without knowledge of the values of the
-outcome variables. We show code here. Those who wish to follow up on the
-general ideas presented here might like to see @rosenbaum2020modern,
-@rosenbaum2020book.
+same age: creating strata of 18 year olds, 19 year olds, etc $\ldots$.
+
+In this memo, we discuss generalizations of this basic approach: from exactly
+matching on a single variable to exclude alternative explanations based on that
+variable alone, to matching on a number of variables all at once in the hopes
+that we might set aside a number of alternative explanations all together.
+
+Although we eventually will want to estimate values for and test hypotheses
+about causal effects, this creation of a matched design is a research design
+step because it can be done without knowledge of the values for the outcome
+variables.^[It is useful to know which units have missing data on the outcomes,
+but it is not necessary to know the values of the outcomes.] This separation of
+design from outcome analysis allows us to use the data to make design decisions
+without worrying about harming the false positive rates of our tests. Those who
+wish to follow up on the general ideas presented here might like to see
+@rosenbaum2020modern, @rosenbaum2020book.
+
+This memo also is a code tutorial, showing examples throughout. It is currently
+only using R because that is the language where those who have been developing
+modern approaches to the creation of matched designs are working.
 
 # Create Data
 
 To make this guide portable, we are making up a fake dataset.
 
 ```{r makedata}
+#| echo: true
 N <- 1000
 set.seed(12345)
 dat <- data.frame(id = 1:N)
@@ -116,7 +138,6 @@ summary(lm2)
 cor(dat[, c("age", "demog", "pay", "preY")])
 ```
 
-# Decide on elements of the design
 
 Our goal is to assess the effect of some observed intervention (that we call
 `trtbin` here for the binary version or `trtcont`) on some outcome (that we
@@ -130,6 +151,14 @@ characteristics of people) from our description. That is, we want to be able to
 **interpret** the relationship we calculate between intervention and outcome as
 reflecting, as much as possible, only the intervention and the outcome and not
 age and education.^[We borrow the idea of "interpretable comparisons" from @kinder1993behalf]
+
+# The simplest matched design: 2 strata, 1 variable
+
+As an example of where we are going, we show an example of what is, in essence,
+a matched design, but one that has only 2 strata and using only 1 variable.
+Here we will also show the outcome analysis, just to be clear about how
+stratification can enable adjustment or substitute for linear additive
+"controlling for".
 
 Say that we want to remove the effect of sex from the relationship between the
 intervention and the outcome. The simplest and most transparent way to do this
@@ -257,9 +286,9 @@ more than a few values? We explain that below as we introduce optimal matching.
 
 When we created our fake data we made two intervention variables, `trtbin` and
 `trtcont`, because we want to demonstrate how to use two kinds of approaches to
-stratification here: bipartite matching (which creates sets or pairs of people
+stratification here: **bipartite matching** (which creates sets or pairs of people
 who differ in a binary variable (i.e. comparing those who received the
-intervention versus did not) and non-bipartite matching (which creates pairs of
+intervention versus did not) and **non-bipartite matching** (which creates pairs of
 people who differ in levels of a variable that has more than two values such
 that each pair should have one person with a higher value and another person
 with a lower value).
