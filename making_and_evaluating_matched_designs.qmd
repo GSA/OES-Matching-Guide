@@ -6,6 +6,8 @@ bibliography: big.bib
 execute:
   echo: true
   output: true
+  message: false
+  warning: false
 format:
   html:
     toc: true
@@ -20,6 +22,8 @@ format:
 ---
 
 ```{r loadlibraries}
+#| code-fold: true
+#| code-summary: "Code to load libraries and general setup"
 if(!require(renv)){
     install.packages("renv",method="wget")
 }
@@ -35,6 +39,7 @@ library(senstrat)
 library(sensemakr)
 conflicts_prefer(dplyr::select)
 conflicts_prefer(dplyr::filter)
+options(digits=4,scipen=8)
 ```
 
 # Overview
@@ -46,7 +51,7 @@ the intervention, and an outcome that we observe for each person, $Y_i$. We
 would like to know whether the outcome among people who experienced the
 intervention  ($Y_i|Z_i=1$) is different from the outcome among those who did
 not experience the intervention  ($Y_i|Z_i=0$) **because of the intervention
-rather than some other factor, x_i**. A matched design will only compare
+rather than some other factor, $x_i$**. A matched design will only compare
 $Y_i|Z_i=1$ with $Y_i|Z_i=0$ **within strata of people who are similar on their
 values of $x_i$ in an effort to set aside $x_i$ as an explanation of the
 difference in outcomes.**
@@ -93,10 +98,12 @@ modern approaches to the creation of matched designs are working.
 
 # Create Data
 
-To make this guide portable, we are making up a fake dataset.
+To make this guide portable, we are making up a fake dataset with covariates
+that help determine the probability of treatment.
 
 ```{r makedata}
 #| echo: true
+#| output: false
 N <- 1000
 set.seed(12345)
 dat <- data.frame(id = 1:N)
@@ -124,18 +131,18 @@ dat <- dat %>% mutate(
 ## optmatch will need row names
 row.names(dat) <- dat$id
 ## Just verifying that trtbin is related to demog and preY
-table(dat$trtbin, exclude = c())
-with(dat, boxplot(demog ~ trtbin))
-with(dat, boxplot(preY ~ trtbin))
+## table(dat$trtbin, exclude = c())
+## with(dat, boxplot(demog ~ trtbin))
+## with(dat, boxplot(preY ~ trtbin))
 
 ## Check the relationship between demog and its components. Not really using demog directly below.
 ## The idea is to ensure some relationships among the covariates using demog.
 lm1 <- lm(demog ~ sso + age + sex + race + edu, data = dat)
-summary(lm1)
+#  summary(lm1)
 lm2 <- lm(preY ~ demog, data = dat)
-summary(lm2)
+# summary(lm2)
 
-cor(dat[, c("age", "demog", "pay", "preY")])
+# cor(dat[, c("age", "demog", "pay", "preY")])
 ```
 
 
@@ -144,13 +151,14 @@ Our goal is to assess the effect of some observed intervention (that we call
 call `postY`). We worry that a naive description of the relationship between
 intervention and outcome would not provide useful policy guidance because any
 such simple two-way relationship might contain other relationships (say, those
-driven by age or education). From a policy stand point we can change the
-intervention but we cannot change the education or age of people, so we want to
-remove the influence of age and education (among other relatively fixed
-characteristics of people) from our description. That is, we want to be able to
-**interpret** the relationship we calculate between intervention and outcome as
-reflecting, as much as possible, only the intervention and the outcome and not
-age and education.^[We borrow the idea of "interpretable comparisons" from @kinder1993behalf]
+driven by age or education in this example). From a policy standpoint we can
+change the intervention but we cannot change the education or age of people, so
+we want to remove the influence of age and education (among other relatively
+fixed characteristics of people) from our description. That is, we want to be
+able to **interpret** the relationship we calculate between intervention and
+outcome as reflecting, as much as possible, only the intervention and the
+outcome and not age and education.^[We borrow the idea of "interpretable
+comparisons" from @kinder1993behalf]
 
 # The simplest matched design: 2 strata, 1 variable
 
@@ -170,11 +178,11 @@ Below we show this most basic approach to using stratification to remove or
 control for the effects of a single variable with two levels as a way to
 introduce multivariate optimal matching later. What we see here is that the
 effect among men is different from the effect among women, and that the effect
-among each sex cannot be confounded by sex --- afterall the variables `sex` is
+among each sex cannot be confounded by sex --- after all the variables `sex` is
 held perfectly constant.
 
-```{r}
-with(dat, table(trtbin, sex, exclude = c()))
+```{r two_strata_example}
+with(dat, table(treated=trtbin, sex=sex, exclude = c()))
 lm_sexM <- lm(postY ~ trtbin, data = dat, subset = sex == "M")
 lm_sexF <- lm(postY ~ trtbin, data = dat, subset = sex == "F")
 coef(lm_sexM)[["trtbin"]]
@@ -185,12 +193,13 @@ Now, these are two descriptions of the relationship of interest, but we tend to
 think about stratification as a way to *remove* confounding relationships from
 *a single overall* relationship. How to calculate this? We show this in steps
 here --- first doing it very simply by hand, and then using "fixed effects". We
-will return to this after creating matched designs since this is the same way
+will return to these ideas after creating matched designs using `optmatch` and
+`designmatch` or another approach to stratification since this is the same way
 that we will estimate effects after creating hundreds of matched pairs or sets
 later.
 
 We know how to analyze a block-randomized (or strata-randomized) experiment
-(see [@gerber2012field]): each block is a mini-experiment. We *estimate the ATE
+[@gerber2012field]: each block is a mini-experiment. We *estimate the ATE
 within each block* and *combine by weighting each block specific estimate*.
 
 The *block-size weight* produces an unbiased estimator in randomized
@@ -203,7 +212,9 @@ practice with matched designs we use the *precision weight* approach because
 which means that the block-size weight and the precision-weight approaches tend
 to be nearly the same and (2) we can calculate the precision-weighted results
 quickly using the fact that "fixed effects" in linear regression models create
-precision weights.
+precision weights and (3) we know that our estimators are biased because we
+neither observe all relevant confounders nor do we know the functional form
+that relates them to the treatment.
 
 ```{r weighting}
 ## First collapse the data to the level of the strata and calculate weights
@@ -219,8 +230,10 @@ dat_sets <- dat %>%
 
 dat_sets$prec_wt_norm <- with(dat_sets, prec_wt / sum(prec_wt))
 
+## The two groups of people with the treatment estimated within each set along with some weights
 dat_sets %>% select(sex, nb, ateb, prob_trt, nbwt, prec_wt_norm)
 
+## The overall estimation using the two kinds of weights
 est_ate_nw <- with(dat_sets, sum(ateb * nbwt))
 est_ate_pw <- with(dat_sets, sum(ateb * prec_wt_norm))
 
@@ -270,14 +283,16 @@ c(est_ate_nw, coef(est_ate1a)[["trtbin"]], coef(est_ate1b)[["trtbin"]], coef(est
 c(est_ate_pw, coef(est_ate2a)[["trtbin"]], coef(est_ate2b)[["trtbin"]], coef(est_ate2c)[["trtbin"]])
 ```
 
-## Summary of the section
+## Summary of the section 
 
 So, we have seen that we can "control for" a single binary variable using
-stratification. We didn't need to work hard to evaluate the stratification ---
-after all, we just held sex perfectly constant within strata. And we were able
-to produce an estimate of an overall effect by calculating effects within
-strata and combining them via weighting. And we showed that we can use OLS for
-this purpose --- just as we would if we had a block-randomized experiment.
+stratification. We didn't need to evaluate the stratification --- after all, we
+just held sex perfectly constant within strata. If someone asked, "Does this
+design remove sex as an alternative explanation?" we could answer simply, "Yes.
+We only compare women with women and men with men." And we were able to produce
+an estimate of an overall effect by calculating effects within strata and
+combining them via weighting. And we showed that we can use OLS for this
+purpose --- just as we would if we had a block-randomized experiment.
 
 What should we do if we have more than one variable? Or if those variables have
 more than a few values? We explain that below as we introduce optimal matching.
@@ -294,8 +309,8 @@ that each pair should have one person with a higher value and another person
 with a lower value).
 
 Imagine that we want to compare people who are similar in multiple demographic
-characteristics as well as baseline outcome (`preY`). We would like to *create
-a research design* where people are placed into strata where they are as
+characteristics as well as baseline outcome (`preY`). We would like to **create
+a research design** where people are placed into strata where they are as
 similar as possible with other people along all of those characteristics. If we
 calculate effects within those strata, we know that we will have minimized the
 effects of those characteristics on the outcome even if we have not exactly
@@ -317,48 +332,80 @@ difference in age).
 
 ## Bipartite Matching with Optmatch
 
-We will start with the task of comparing people based on their experience of a binary intervention (`trtbin`).
+We will start with the task of comparing people based on their experience of a binary intervention (`trtbin`) using the `optmatch` package.
 
-### Dimension reduction
+The general idea in optimal matching is to answer the question, "How shall we
+break the data into strata?" with "We should choose strata within which
+differences between units are minimized." Current software like `optmatch` and
+`designmatch` create these strata via minimization using **distance matrices**.
+That is, if we can represent differences between all of the treated and control
+observations as some form of distances, then we can ask those optimal matching
+algorithms to find strata that are optimal in the sense of there being no other
+sets of strata where treated and control units are closer together on that
+distance. For example, below we make a matrix of absolute differences between
+each treated unit and each control unit in `preY`:
+
+```{r abs_dist}
+## Scalar/Absolute differences in baseline outcome
+abs_dist <- match_on(trtbin ~ preY, data = dat, method = "euclidean")
+abs_dist[1:3, 1:4]
+## Notice that the distance between the treated unit labeled "1" and the control unit labeled "5" in the matrix above is simply the absolute difference:
+abs(dat["1", "preY"] - dat["5", "preY"])
+## Optmatch offers us some overview of this distance matrix
+summary(abs_dist)
+```
+
+## Dimension reduction
 
 We convert many columns into one column we reduce the dimensions of the dataset
 (to one column). We can use the idea of **multivariate distance** to produce
 distance matrices to minimize **multivariate distances**.
 
-We defer in-depth explanation of these scores to Chapter ?9? in
-[@rosenbaum2020book] for now. Here I create three different distance matrices:
-`abs_dist` which records the absolute difference in the pre-outcome between
-people in the treated versus control groups; `mh_dist` which records the
-differences in Mahalanobis distance (after transforming the covariates to ranks
-and scaling, see the [@rosenbaum2020book] section 9.3 on this); and `ps_dist` which
-records differences in "propensity score".
+We defer in-depth explanation of these scores to [@rosenbaum2020book] for now.
+I already created the distance matrix recording absolute differences on a
+single variable `abs_dist` which records the absolute difference in the
+pre-outcome between people in the treated versus control groups. Below we
+create multivariate distances in two different ways: a Mahalanobis distance
+(`mh_dist`) and a standardized distance on propensity score (`ps_dist`). The
+Mahalanobis distance matrix records the differences in Mahalanobis distance
+(after transforming the covariates to ranks and scaling, see the
+[@rosenbaum2020book] section 9.3 on this); and `ps_dist` which records
+differences in predicted treatment or "propensity score" on the linear
+predictor scale after standardizing.
 
 
-```{r dists}
-## Scalar/Absolute differences in baseline outcome
-abs_dist <- match_on(trtbin ~ preY, data = dat, method = "euclidean")
-abs_dist[1:3, 1:4]
-abs(dat["1", "preY"] - dat["5", "preY"])
-summary(abs_dist)
-
+```{r mh_dists}
 ### Setup for multivariate distances
 covs <- c("sso", "age", "sex", "race", "edu", "grade", "pay", "tenure", "preY")
 cov_fmla <- reformulate(covs, response = "trtbin")
-
 ## A multivariate distance score: Mahalanobis distance on rank transformed covariates
 mh_dist <- match_on(cov_fmla, data = dat, method = "rank_mahalanobis")
 mh_dist[1:3, 1:4]
-## The closest and farther people from person 1 in regards mahalanobis distance
-mh_dist[1, c("104", "213")]
 ## person 213 is closer to person 1 in multivariate terms than person 104
+mh_dist[1, c("104", "213")]
+## Here we can compare those two people with person 1 along all of the covariates:
 dat %>%
   filter(id %in% c(1, 104, 213)) %>%
   select(one_of(c("trtbin", "id", covs)))
 summary(mh_dist)
+```
 
-## A multivariate distance score: Propensity score using a logistic regression model that shrinks coefficients toward zero
-## to avoid the common separation problem in logistic models
-## Not loading the arm package because it contains lots of stuff that we don't need
+This next produces a different distance matrix. Whereas the Mahalanobis
+distance aims to weight each covariate equally, the propensity distance weights
+the influence of each covariate in the score depending on how predictive it is
+of the treatment. We often use a logistic regression to produce these scores,
+but logistic regressions often overfit the data, so below we use a version of
+logistic regression with the coefficients shrunken towards zero. What really
+matters here is that the covariates that are *relatively more predictive* than
+others have larger coefficients in absolute value.
+
+```{r ps_dist}
+## A multivariate distance score: Propensity score using a logistic regression
+## model that shrinks coefficients toward zero to avoid the separation problem
+## common in logistic models
+## Not loading the arm package because it contains lots of stuff that we don't need so just
+## using arm::bayesglm
+
 psmod <- arm::bayesglm(cov_fmla, data = dat, family = binomial())
 ## Inspect the coefs to make sure that none are too huge
 zapsmall(coef(psmod))
@@ -367,7 +414,7 @@ ps_dist[1:3, 1:4]
 summary(ps_dist)
 ```
 
-**Creating the stratification**
+## Creating the stratification
 
 Creating the stratification using the `pairmatch` and `fullmatch` commands in
 the optmatch package just requires that the researcher provide an appropriately
@@ -375,10 +422,10 @@ formatted distance matrix to those functions.
 
 Here is a paired design. The `pairmatch` command creates an object that is a
 factor variable that indicates which individual belongs with which pair. Below
-we see person 1 (a person who experienced the intervention) is placed into a
-pair with person 442 (a person who did not experience the intervention). These
-people don't look extremely similar, so we may want to fine tune this design
-using other information.
+we see persons 1 and 3 (people who experienced the intervention) were placed
+into pairs with person 627 and 383 (people who did not experience the
+intervention). These people don't look extremely similar, so we may want to
+fine tune this design using other information.
 
 ```{r pm1}
 ## A paired design
@@ -394,14 +441,15 @@ dat %>%
   arrange(pm1, trtbin)
 ```
 
-Below we show a fully-matched design in which no control units are excluded. We
-restrict this design to have no more than 1 treated unit per set and no more
-than 5 controls per set (we can make other decisions to generate a design that
-we like later: the decision to restrict the size of the sets has mostly to do
-with the fact the effective sample size of a stratified research design with
-two treatments is enhanced as we (a) get more strata and (b) the strata are
-more equal in size of treated versus controls. We can explain a lot more about
-this.)
+We can also ask for a match with a variable number of controls and treated
+units in each set. Below we show a fully-matched design in which no control
+units are excluded. We restrict this design to have no more than 1 treated unit
+per set and no more than 5 controls per set (we can make other decisions to
+generate a design that we like later: the decision to restrict the size of the
+sets has mostly to do with the fact the effective sample size of a stratified
+research design with two treatments is enhanced as we (a) get more strata and
+(b) the strata are more equal in size of treated versus controls. We can
+explain a lot more about this.)
 
 ```{r fm1}
 ## A full-matched design with no more than one treated unit per set and no more than 5 controls per set
