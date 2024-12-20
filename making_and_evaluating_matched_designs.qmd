@@ -283,7 +283,7 @@ c(est_ate_nw, coef(est_ate1a)[["trtbin"]], coef(est_ate1b)[["trtbin"]], coef(est
 c(est_ate_pw, coef(est_ate2a)[["trtbin"]], coef(est_ate2b)[["trtbin"]], coef(est_ate2c)[["trtbin"]])
 ```
 
-## Summary of the section 
+## Summary of the section
 
 So, we have seen that we can "control for" a single binary variable using
 stratification. We didn't need to evaluate the stratification --- after all, we
@@ -373,6 +373,7 @@ Mahalanobis distance matrix records the differences in Mahalanobis distance
 differences in predicted treatment or "propensity score" on the linear
 predictor scale after standardizing.
 
+This next code chunk creates a rank-based **Mahalanobis distance matrix** using 9 covariates.
 
 ```{r mh_dists}
 ### Setup for multivariate distances
@@ -391,7 +392,7 @@ summary(mh_dist)
 ```
 
 This next produces a different distance matrix. Whereas the Mahalanobis
-distance aims to weight each covariate equally, the propensity distance weights
+distance aims to weight each covariate equally, the **propensity distance** weights
 the influence of each covariate in the score depending on how predictive it is
 of the treatment. We often use a logistic regression to produce these scores,
 but logistic regressions often overfit the data, so below we use a version of
@@ -411,16 +412,27 @@ psmod <- arm::bayesglm(cov_fmla, data = dat, family = binomial())
 zapsmall(coef(psmod))
 ps_dist <- match_on(psmod, data = dat)
 ps_dist[1:3, 1:4]
+ps_dist[1, c("104", "169")]
+
+## Here we can compare those two people with person 1 along all of the
+## covariates.
+## Notice that control person 169 is closer to treated person 1
+## across nearly all of the covariates than person 104 in regards to the
+## propensity score
+
+dat %>%
+  filter(id %in% c(1, 104, 169)) %>%
+  select(one_of(c("trtbin", "id", covs)))
 summary(ps_dist)
 ```
 
-## Creating the stratification
+## Creating the stratification using the `optmatch` package
 
 Creating the stratification using the `pairmatch` and `fullmatch` commands in
 the optmatch package just requires that the researcher provide an appropriately
 formatted distance matrix to those functions.
 
-Here is a paired design. The `pairmatch` command creates an object that is a
+Here is a **paired design**. The `pairmatch` command creates an object that is a
 factor variable that indicates which individual belongs with which pair. Below
 we see persons 1 and 3 (people who experienced the intervention) were placed
 into pairs with person 627 and 383 (people who did not experience the
@@ -442,18 +454,31 @@ dat %>%
 ```
 
 We can also ask for a match with a variable number of controls and treated
-units in each set. Below we show a fully-matched design in which no control
-units are excluded. We restrict this design to have no more than 1 treated unit
-per set and no more than 5 controls per set (we can make other decisions to
-generate a design that we like later: the decision to restrict the size of the
-sets has mostly to do with the fact the effective sample size of a stratified
-research design with two treatments is enhanced as we (a) get more strata and
-(b) the strata are more equal in size of treated versus controls. We can
-explain a lot more about this.)
+units in each set where the number of controls per treated and treated per
+control are chosen to minimize overall balance using **fullmatch**
+[@hansen:2004]. Below we show a fully-matched design called  `fm1_unrestricted`
+in which no control units are excluded. And we compare this design to one where
+we restrict this design to have no more than 1 treated unit per set and no more
+than 5 controls per set.^[We can make other decisions to generate a design that
+we like later: the decision to restrict the size of the sets has mostly to do
+with the fact the effective sample size of a stratified research design with
+two treatments is enhanced as we (a) get more strata and (b) the strata are
+more equal in size of treated versus controls. We can explain a lot more about
+this.]
 
 ```{r fm1}
-## A full-matched design with no more than one treated unit per set and no more than 5 controls per set
+fm_unrestricted <- fullmatch(mh_dist, data = dat)
+summary(fm_unrestricted, min.controls = 0, max.controls = Inf)
 
+stopifnot(all.equal(names(fm_unrestricted), row.names(dat)))
+dat$fm_unrestricted <- factor(fm_unrestricted)
+
+dat %>%
+  filter(fm_unrestricted %in% c("1.1", "1.167")) %>%
+  select(one_of(c("fm_unrestricted", "trtbin", "id", covs))) %>%
+  arrange(fm_unrestricted, trtbin)
+
+## A full-matched design with no more than one treated unit per set and no more than 5 controls per set
 fm1 <- fullmatch(mh_dist, min.controls = 1, max.controls = 5, data = dat)
 summary(fm1, min.controls = 0, max.controls = Inf)
 
@@ -466,11 +491,11 @@ dat %>%
   arrange(fm1, trtbin)
 ```
 
-In each case the strata (pairs or matched sets) are named with levels like
+In each case the strata (pairs or matched sets) are factor variables named with levels like
 "1.1" or "1.99" etc.. where these names are not numbers, but "1.1" means "group
 1, first set". And in our case, here we only have one overall group so all of
-the sets start with `1`: when we use exact matching below the first element of
-the set name will change.
+the sets start with `1`: when we use exact matching the first element of
+the set name will change. We will show this below.
 
 ### How to assess a matched design?
 
@@ -489,14 +514,15 @@ of strata is maximized and each pair has exactly one treated and one control
 unit. When creating full matched designs --- with varying numbers of treated
 and controls per set --- these issues become more important.]
 
-First, we can answer that by referring to what we know about the units and the
-theory of change and the alternative explanations that we are trying to engage.
-For example, imagine that we really must remove the effect of age from our
-comparisons in order for any reasonable interpretation of our analysis to shed
-light on the effect of the intervention itself and not on age. We might then
-calculate the difference in age within each set and ask whether any set has
-such a large difference in age that we could not credibly claim to have
-"Controlled for" age with this design overall.
+First, we can answer this question about design adequacy by referring to what
+we know about the units and the theory of change and the alternative
+explanations that we are trying to engage. For example, imagine that we really
+must remove the effect of age from our comparisons in order for any reasonable
+interpretation of our analysis to shed light on the effect of the intervention
+itself and not on age. We might then calculate the difference in age within
+each set and ask whether any set has such a large difference in age that we
+could not credibly claim to have "adjusteded away" the potentially confounsing
+effects of age with this design overall.
 
 
 ```{r echo=FALSE, out.width=".9\\textwidth"}
@@ -511,15 +537,21 @@ dat_plot1$nostrata <- rep(1, nrow(dat_plot1))
 ```
 
 For example, we could make a plot to show this information within sets versus
-raw differences from the fullmatch. Here, for example, we show the worst 100
-sets in order of remaining difference in mean age between the treated and
-control observations from left to right. Notice that no set has nearly the age
-difference that we see overall (in the boxplot at the far right): without
-matching we would be comparing people who are `r min(dat$age)` with people who
-are `r max(dat$age)` whereas after matching the worse set has has a difference
-of `r max(dat_plot1$agediff)`.
+raw differences from the fullmatch. @fig-fm_eval_age shows, for example, we
+show the worst 100 sets out of the 334 total sets in order of remaining absolute
+difference in mean age between the treated and control observations from left
+to right. Notice that no set has nearly the age difference that we see overall
+(in the boxplot at the far right): without matching we would be comparing
+people who are `r min(dat$age)` with people who are `r max(dat$age)` whereas
+after matching the worse set has has a difference of `r
+max(dat_plot1$agediff)`.
 
 ```{r makeplot1}
+#| echo: false
+#| output: true
+#| label: fig-fm_eval_age
+#| fig-cap: "Within set absolute differences in mean age shown within each set (left panel) and overall, before any stratification (right panel). Red dots are the means of the absolute differences."
+#| out-width: 75%
 bpfm1 <- ggplot(dat_plot1 %>% filter(agediff > quantile(agediff,.9)), aes(x = fm1, y = age)) +
   geom_boxplot() +
   stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red", fill = "red") +
@@ -538,17 +570,17 @@ bporig <- ggplot(dat_plot1, aes(x = nostrata, y = age)) +
 grid.arrange(bpfm1, bporig, ncol = 2, layout_matrix = matrix(c(1, 1, 1, 1, 2), nrow = 1))
 ```
 
-We can futher reason about these differences by looking at them more closely.
-Here we use the full matched design just for convenience. For example, we see
-that the worst matched set has a difference of 33 years --- including a 15 year
-old and a 49 year old. This might be a bad set depending on the context. Across
-the sets, we see that half of them differ by less than 5.8 years of age, and
-that 90% of the sets differ by less than about 13 years of age. Is this sign
-that we have done enough to remove the effects of age from the impact
-evaluation? That depends on context. Let us imagine for now that we are not
-satified with this design --- that we'd like to have smaller differences on
-age. But that we also are worried about some of the other variables. And, in
-fact we'd like to evaluate the design as a whole. How might we do that?
+We can futher reason about these differences by calculating their quantiles.
+For example, below we see that the worst matched set in the `fm1` design has a
+difference of 33 years --- including a 15 year old and a 49 year old. This
+might be a bad set depending on the context. Across the sets, we see that half
+of them differ by less than 5.8 years of age, and that 90% of the sets differ
+by less than about 13 years of age. Is this sign that we have done enough to
+remove the effects of age from the impact evaluation? That depends on context.
+Let us imagine for now that we are not satified with this design --- that we'd
+like to have smaller differences on age. But that we also are worried about
+some of the other variables. And, in fact we'd like to evaluate the design as a
+whole. How might we do that?
 
 ```{r sdiffs, echo=FALSE}
 rawmndiffs <- with(dat, mean(age[trtbin == 1]) - mean(age[trtbin == 0]))
@@ -569,39 +601,83 @@ quantile(abs(setdiffsfm1$mn_age_diffs), seq(0,1,.1))
 
 ## How to assess stratified research designs
 
-We know that in **designs randomized within strata**:
+To evaluate the design as a whole, let us start with what we know. Consider a
+standard against which to compare our design, the block- or strata-randomized
+experiment. We know that in designs randomized within strata:
 
  - Randomization balances covariate distributions between treated and control
-   groups. It does not make them identical.
- - We can repeat the known randomization to check the randomization procedure
-   (mostly useful if there is a long chain of communication between the random
-   number generator and the field). **We know how strata weighted mean
-   differences in covariates would vary in an experiment.**
- - **Randomization does not imply exact equivalence. Large differences in
-   covariates easily arise in small experiments.**
+ groups. **It does not make them identical.**
+- We can repeat the known randomization to check the randomization procedure
+(mostly useful if there is a long chain of communication between the random
+number generator and the field such that we worry about the implementation of
+the experiment rather than the random number generator on our computer). This
+repetition is useful because **we know how strata weighted mean differences in
+covariates would vary in an experiment.**
+- **Randomization does not imply exact equivalence. Large differences in
+covariates easily arise in small experiments.**
 
 This means that we can compare  **stratified observational studies** to
 equivalent randomized experiments [@hansen2008cbs].
 
-## Evaluate the design: Compare to a randomized experiment.
+### Evaluate the design: Compare to a randomized experiment.
 
 The within-set differences look different from those that would be expected
 from a randomized experiment.^[If you look at the documentation for
 `balanceTest` you'll that it can also handle clustered data as well as other
-options.]
+options.] Below we see that (1) the un-adjusted design (represented with `--`
+in the `overall` comparison of the data to the standardized mean differences in
+covariates we would have expected from a randomized experiment) does not look
+consistent with the experimental standard (the $p$-value is so tiny that we
+would say that nearly no randomized experiments would have the pattern of
+imbalance across all of those covariates that we see in our data); (2) And that
+while the full-matching (`fm1`) and  pair-matching (`pm1`) improve the
+imbalance slightly, neither looks appreciably consistent with a randomized
+experiment (again, the $p$-values are too small). If, however, we saw a
+$p$-value of, say, $p=.8$ we would say that the given design has smaller
+covariate imbalance than 80% of equivalent randomized experiments --- which
+would be a sign that our design compares favorably with randomized experiments.
 
 ```{r compare_bal}
 #| eval: true
 #| echo: true
+
 balfmla_new <- stats::update(cov_fmla,.~.+ strata(fm1)+strata(pm1))
+balfmla_new
+# trtbin ~ sso + age + sex + race + edu + grade + pay + tenure +
+#     preY + strata(fm1) + strata(pm1)
+
 xbfm1 <- balanceTest(balfmla_new, data = dat, p.adjust.method="holm")
-xbfm1$results[, , ]
 xbfm1$overall
 ```
 
-## What is balanceTest doing?
+We can also inspect the individual mean differences across many covariates in
+one table (shown below). We have sorted the table by the variables that have
+the largest $z$ statistics (calculated using a large-sample approximation to
+the randomization-based distribution of the null hypothesis of no differences
+on the covariate between treated and control groups conditional on strata). The
+$p$-values are adjusted for multiple testing using the Holm-Bonferroni method
+since we do not want to mislead ourselves by looking at 19 $p$-values and
+declaring any $p < .05$ as "significantly imbalanced". We see that there are
+still appreciable differences in baseline outcome (`preY`) and `age` (a
+difference of about 5 years after adjusting for the stratification) and  in the
+proportion of White respondents (a difference of about 6 percentage points).
 
-It compares the strata-weighted average of within-strata differences to that
+```{r}
+xbfm1_dat <- data.frame(xbfm1$results[,,"fm1"])
+xbfm1_dat %>% arrange(desc(abs(z)))
+```
+
+We will return to the question of how to make the balance better below when we
+talk about exact matching and the use of calipers in the `optmatch` package and
+the use of "nearness" penalties in the `designmatch` package. First, however,
+we will explain a bit more about what `balanceTest` is doing --- it turns out
+that the general approach for assessing balance is the same as the approach we
+will use to estimate average treatment effects once we are satisfied with the
+design.
+
+#### What is balanceTest doing?
+
+The balanceTest approach compares the strata-weighted average of within-strata differences to that
 which would be expected if we were to repeat an experiment with the same
 stratified design and same covariate values (and `balanceTest` uses a large
 sample Normal approximation to this distribution.)
@@ -622,16 +698,80 @@ setmeanDiffs
 ## What is balanceTest doing with multiple sets/blocks?
 
 The test statistic is a weighted average of the set-specific differences (*same
-approach as we would use to test the null in a block-randomized experiment*)
+approach as we would use to test the null in a block-randomized experiment*). What weight do we use? In this case, `balanceTest` reports as the strata-adjusted mean difference the average of the mean differences within each strata weighted by the number of treated in each strata, one might call this the average effect of treatment on the treated style weighting.
 
 ```{r wtmns, echo=TRUE}
 ## The descriptive mean difference using block-size weights
 with(setmeanDiffs, sum(diffage * nTb / sum(nTb)))
-## The mean diff used as the observed value in the testing
-with(setmeanDiffs, sum(diffage * hwt / sum(hwt)))
 ## Compare to balanceTest output
-xbfm1$results[, , "fm1"]
+xbfm1$results["age","adj.diff" , "fm1"]
 ```
+
+However, the **test statistic** used to create the $p$-values uses a different
+weighting scheme which is known to produce the most powerful tests of the null
+of no differences [@hansen2008cbs]. Hansen and Bowers call this a harmonic-mean
+weight. We could also call it a precision-weight. Or a "fixed-effects" weight.
+This weight considered both the overall size of the set but also the ratio of
+treated to control units within each set (both of which would determine the
+standard error of the estimate of the average treatment effect if it were
+calculated within a given set).
+
+```{r}
+## The mean diff used as the observed value in the testing is weighted
+with(setmeanDiffs, sum(diffage * hwt / sum(hwt)))
+coef(lm_robust(age~trtbin,fixed_effects=~fm1,data=dat))
+```
+
+#### Where does the null distribution for the overall test statistic come from?
+
+We will show this distribution in detail here --- generating it by hand using
+code that should be relatively easy to understand (compared to the matrix
+algebra used for efficiency within the RItools package). But we can also
+calculate this $p$-value directly using permutations of treatment and control
+within set using the `coin` package:
+
+TODO START HERE
+
+```{r}
+balfmla_fm1 <- stats::update(balfmla_new,.~.-1-strata(pm1))
+bt_fm1 <- balanceTest(balfmla_fm1,data=dat)
+bt_fm1$overall
+
+## coin doesn't know what to do with all of these variables of mixed types plus it wants a factor variable as the treatment
+dat$trtbinF <- factor(dat$trtbin)
+datmm <- data.frame(model.matrix(stats::update(balfmla_fm1,.~.-1-strata(fm1)),data=dat))
+#datmm$trtbinF <- dat$trtbinF
+datmm$trtbin <- dat$trtbin
+
+library(formula.tools)
+library(coin)
+coin_fmla <- ~ trtbin | fm1
+tmp_fmla <- reformulate(names(datmm)[-ncol(datmm)],response="trtbin") #names(datmm)[ncol(datmm)])
+
+## The version using asymptotic approximations to do the randomization inference
+bt_fm1a <- balanceTest(stats::update(tmp_fmla,.~.-1+strata(fm1)),data=datmm)
+bt_fm1$overall["fm1",]
+
+lhs(coin_fmla) <- formula.tools::rhs(tmp_fmla)
+## The version using asymptotic approximations to do the randomization inference
+d2_coin_test_asymp <- independence_test(coin_fmla,data=datmm,teststat="quadratic",distribution=asymptotic())
+d2_coin_test_asymp
+
+## The version using permutations to do the randomization inference
+d2_coin_test_perm<- independence_test(coin_fmla,data=datmm,teststat="quadratic",distribution=approximate(nresample = 10000))
+d2_coin_test_perm
+
+## Draw from the two different approximations to the null distribution
+set.seed(12345)
+null_perm_dist <- rperm(d2_coin_test_perm,10000)
+asymp_dist <- rperm(d2_coin_test_asymp,10000)
+
+
+
+```
+
+
+
 
 ## Something new: Calipers
 
