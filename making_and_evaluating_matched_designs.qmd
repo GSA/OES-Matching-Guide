@@ -739,23 +739,37 @@ bt_fm1$overall
 
 ## coin doesn't know what to do with all of these variables of mixed types plus it wants a factor variable as the treatment
 dat$trtbinF <- factor(dat$trtbin)
+
 datmm <- data.frame(model.matrix(stats::update(balfmla_fm1,.~.-1-strata(fm1)),data=dat))
-#datmm$trtbinF <- dat$trtbinF
+datmm$trtbinF <- dat$trtbinF
 datmm$trtbin <- dat$trtbin
+datmm$fm1 <- dat$fm1
 
 library(formula.tools)
-library(coin)
-coin_fmla <- ~ trtbin | fm1
-tmp_fmla <- reformulate(names(datmm)[-ncol(datmm)],response="trtbin") #names(datmm)[ncol(datmm)])
+coin_fmla <- ~ trtbinF | fm1
+
+tmp_fmla <- reformulate(names(datmm)[!(names(datmm) %in% c("trtbin","trtbinF","fm1"))],response="trtbin") 
 
 ## The version using asymptotic approximations to do the randomization inference
 bt_fm1a <- balanceTest(stats::update(tmp_fmla,.~.-1+strata(fm1)),data=datmm)
 bt_fm1$overall["fm1",]
+xb_fm1 <- xBalance(tmp_fmla,strata=list(fm1=~fm1),data=datmm,report="all")
+xb_fm1$overall["fm1",]
 
 lhs(coin_fmla) <- formula.tools::rhs(tmp_fmla)
 ## The version using asymptotic approximations to do the randomization inference
 d2_coin_test_asymp <- independence_test(coin_fmla,data=datmm,teststat="quadratic",distribution=asymptotic())
 d2_coin_test_asymp
+
+statistic(d2_coin_test_asymp,"linear")
+#   sso   age sexF sexM raceB raceW edub educ edud edue eduf edug eduh grade      pay tenure  preY
+#  1874 16327  169  165    44   278   53   48   13   60   33   20   30  1149 26306102   3328 101.8
+statistic(d2_coin_test_asymp,"standardized")
+#      sso   age    sexF   sexM  raceB raceW    edub  educ  edud  edue   eduf    edug  eduh   grade pay tenure  preY
+#  -0.8073 11.02 -0.3581 0.3581 -3.372 4.092 -0.3875 1.465 1.151 1.197 -2.305 -0.3037 -2.42 -0.9319   1 -1.027 12.52
+
+cbind(xb_fm1$results[,c("adj.diff","std.diff","z"),],matrix(statistic(d2_coin_test_asymp,"standardized"),ncol=1))
+bt_fm1a$results[,c("adj.diff","std.diff","z"),]
 
 ## The version using permutations to do the randomization inference
 d2_coin_test_perm<- independence_test(coin_fmla,data=datmm,teststat="quadratic",distribution=approximate(nresample = 10000))
@@ -764,11 +778,30 @@ d2_coin_test_perm
 ## Draw from the two different approximations to the null distribution
 set.seed(12345)
 null_perm_dist <- rperm(d2_coin_test_perm,10000)
-asymp_dist <- rperm(d2_coin_test_asymp,10000)
+null_asymp_dist <- rperm(d2_coin_test_asymp,10000)
+bt_dist <- rchisq(n=10000,df=16)
 
+d2_dists <- data.frame(tstat=c(null_perm_dist,null_asymp_dist),type=rep(c("perm","asymp"),each=10000))
 
+dist_compare <- ggplot(d2_dists,aes(x=tstat,group=type,color=type))+
+  geom_density()
+
+dist_compare
+
+## Investigating the discrepancy
+
+tmp <- balanceTest(pr ~ date + t1 + t2 + cap + ne + ct + bw + cum.n + strata(pt),data=nuclearplants)
+nuclearplants$prF <- factor(nuclearplants$pr)
+nuclearplants$ptF <- factor(nuclearplants$pt)
+tmp_coin <- independence_test(date + t1 + t2 + cap + ne + ct + bw + cum.n ~ prF | ptF, teststat="quadratic",data=nuclearplants)
+
+tmp$overall
+tmp_coin
+statistic(tmp_coin)
 
 ```
+
+
 
 
 
