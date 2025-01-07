@@ -332,7 +332,8 @@ difference in age).
 
 ## Bipartite Matching with Optmatch
 
-We will start with the task of comparing people based on their experience of a binary intervention (`trtbin`) using the `optmatch` package.
+We will start with the task of comparing people based on their experience of a
+binary intervention (`trtbin`) using the `optmatch` package.
 
 The general idea in optimal matching is to answer the question, "How shall we
 break the data into strata?" with "We should choose strata within which
@@ -497,7 +498,7 @@ In each case the strata (pairs or matched sets) are factor variables named with 
 the sets start with `1`: when we use exact matching the first element of
 the set name will change. We will show this below.
 
-### How to assess a matched design?
+## How to assess a matched design?
 
 Did either of those designs do a good job? Should we feel confident using them
 to remove the influence of the covariates? We have two ways to answer those
@@ -513,6 +514,8 @@ matched design that creates pairs, these considerations go away --- the number
 of strata is maximized and each pair has exactly one treated and one control
 unit. When creating full matched designs --- with varying numbers of treated
 and controls per set --- these issues become more important.]
+
+### Look for substantively large strata-wise differences
 
 First, we can answer this question about design adequacy by referring to what
 we know about the units and the theory of change and the alternative
@@ -599,7 +602,7 @@ setdiffsfm1 %>% arrange(desc(abs(mn_age_diffs))) %>% head()
 quantile(abs(setdiffsfm1$mn_age_diffs), seq(0,1,.1))
 ```
 
-## How to assess stratified research designs
+### How to assess stratified research designs as a whole: the omnibus-testing approach
 
 To evaluate the design as a whole, let us start with what we know. Consider a
 standard against which to compare our design, the block- or strata-randomized
@@ -619,8 +622,6 @@ covariates easily arise in small experiments.**
 This means that we can compare  **stratified observational studies** to
 equivalent randomized experiments [@hansen2008cbs].
 
-### Evaluate the design: Compare to a randomized experiment.
-
 The within-set differences look different from those that would be expected
 from a randomized experiment.^[If you look at the documentation for
 `balanceTest` you'll that it can also handle clustered data as well as other
@@ -637,6 +638,8 @@ $p$-value of, say, $p=.8$ we would say that the given design has smaller
 covariate imbalance than 80% of equivalent randomized experiments --- which
 would be a sign that our design compares favorably with randomized experiments.
 
+<!-- TODO:  START HERE. Something weird about the pay variable in independence_test -->
+
 ```{r compare_bal}
 #| eval: true
 #| echo: true
@@ -648,6 +651,55 @@ balfmla_new
 
 xbfm1 <- balanceTest(balfmla_new, data = dat, p.adjust.method="holm")
 xbfm1$overall
+```
+
+Notice that you can also use `independence_test` from the `coin` package for
+this purpose. This function requires a bit more work on the part of the user,
+but we show it here just to be clear that this approach can be implemented via
+at least two pre-packaged pieces of software.
+
+```{r coin_omni_demo}
+
+## coin doesn't know what to do with all of these variables of mixed types plus
+## it wants a factor variable as the treatment, so the model.matrix command
+## expands all of the factors into 0,1 variables. balanceTest does this behind
+## the scenes
+
+dat$trtbinF <- factor(dat$trtbin)
+
+##datmm <- data.frame(stats::model.matrix(stats::update(balfmla_new,~.-1-strata(fm1)-strata(pm1)),data=dat))
+datmm <- fill.NAs(stats::update(balfmla_new,~.-1-strata(fm1)-strata(pm1)),data=dat,all.covs=TRUE)
+
+datmm$trtbinF <- dat$trtbinF
+datmm$trtbin <- dat$trtbin
+datmm$fm1 <- dat$fm1
+
+balfmla_new_for_comparison <- reformulate(names(datmm)[!(names(datmm) %in% c("trtbin","trtbinF","fm1"))],response="trtbin")
+## trtbin ~ sso + age + sexF + sexM + raceB + raceW + edub + educ + edud + edue + eduf + edug + eduh + grade + pay + tenure + preY
+
+
+## The version using asymptotic approximations to do the randomization inference
+balfmla_new_for_comparison <- trtbin ~ pay #sso + age +sexF + sexM + raceB + raceW + edub + edud + edue +eduf +eduh + grade + tenure + preY 
+bt_fm1 <- balanceTest(stats::update(balfmla_new_for_comparison,.~.-1+strata(fm1)),data=datmm)
+bt_fm1$overall["fm1",]
+xb_fm1 <- xBalance(balfmla_new_for_comparison,strata=list(fm1=~fm1),data=datmm,report="all")
+xb_fm1$overall["fm1",]
+
+## Now independence_test wants the formula to be flipped (rhs versus lhs)
+library(formula.tools)
+coin_fmla <- ~ trtbinF | fm1
+
+lhs(coin_fmla) <- formula.tools::rhs(balfmla_new_for_comparison)
+coin_fmla
+## The version using asymptotic approximations to do the randomization inference
+d2_coin_test_asymp <- independence_test(coin_fmla,data=datmm,teststat="quadratic",distribution=asymptotic())
+d2_coin_test_asymp
+pvalue(d2_coin_test_asymp)
+
+rbind(c(statistic(d2_coin_test_asymp),pvalue(d2_coin_test_asymp)),
+bt_fm1$overall["fm1",c(1,3)],
+xb_fm1$overall["fm1",c(1,3)])
+
 ```
 
 We can also inspect the individual mean differences across many covariates in
@@ -675,6 +727,7 @@ that the general approach for assessing balance is the same as the approach we
 will use to estimate average treatment effects once we are satisfied with the
 design.
 
+
 #### What is balanceTest doing?
 
 The balanceTest approach compares the strata-weighted average of within-strata differences to that
@@ -695,7 +748,7 @@ setmeanDiffs <- dat %>%
 setmeanDiffs
 ```
 
-## What is balanceTest doing with multiple sets/blocks?
+### What is balanceTest doing with multiple sets/blocks?
 
 The test statistic is a weighted average of the set-specific differences (*same
 approach as we would use to test the null in a block-randomized experiment*). What weight do we use? In this case, `balanceTest` reports as the strata-adjusted mean difference the average of the mean differences within each strata weighted by the number of treated in each strata, one might call this the average effect of treatment on the treated style weighting.
@@ -748,7 +801,7 @@ datmm$fm1 <- dat$fm1
 library(formula.tools)
 coin_fmla <- ~ trtbinF | fm1
 
-tmp_fmla <- reformulate(names(datmm)[!(names(datmm) %in% c("trtbin","trtbinF","fm1"))],response="trtbin") 
+tmp_fmla <- reformulate(names(datmm)[!(names(datmm) %in% c("trtbin","trtbinF","fm1"))],response="trtbin")
 
 ## The version using asymptotic approximations to do the randomization inference
 bt_fm1a <- balanceTest(stats::update(tmp_fmla,.~.-1+strata(fm1)),data=datmm)
