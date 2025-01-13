@@ -1,6 +1,6 @@
 ---
 title: The OES Guide to Making and Evaluating Matched Designs (DRAFT!!)
-author: Jake Bowers and
+author: Jake Bowers and Ben Jaques-Leslie
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 bibliography: big.bib
 execute:
@@ -104,6 +104,7 @@ that help determine the probability of treatment.
 ```{r makedata}
 #| echo: true
 #| output: false
+#| code-fold: true
 N <- 1000
 set.seed(12345)
 dat <- data.frame(id = 1:N)
@@ -378,7 +379,7 @@ This next code chunk creates a rank-based **Mahalanobis distance matrix** using 
 
 ```{r mh_dists}
 ### Setup for multivariate distances
-covs <- c("sso", "age", "sex", "race", "edu", "grade", "pay", "tenure", "preY")
+covs <- c("sso", "age", "sex", "race", "edu", "grade", "tenure", "preY")
 cov_fmla <- reformulate(covs, response = "trtbin")
 ## A multivariate distance score: Mahalanobis distance on rank transformed covariates
 mh_dist <- match_on(cov_fmla, data = dat, method = "rank_mahalanobis")
@@ -638,16 +639,14 @@ $p$-value of, say, $p=.8$ we would say that the given design has smaller
 covariate imbalance than 80% of equivalent randomized experiments --- which
 would be a sign that our design compares favorably with randomized experiments.
 
-<!-- TODO:  START HERE. Something weird about the pay variable in independence_test -->
-
 ```{r compare_bal}
 #| eval: true
 #| echo: true
 
 balfmla_new <- stats::update(cov_fmla,.~.+ strata(fm1)+strata(pm1))
 balfmla_new
-# trtbin ~ sso + age + sex + race + edu + grade + pay + tenure +
-#     preY + strata(fm1) + strata(pm1)
+# trtbin ~ sso + age + sex + race + edu + grade + tenure + preY +
+#     strata(fm1) + strata(pm1)
 
 xbfm1 <- balanceTest(balfmla_new, data = dat, p.adjust.method="holm")
 xbfm1$overall
@@ -675,11 +674,9 @@ datmm$trtbin <- dat$trtbin
 datmm$fm1 <- dat$fm1
 
 balfmla_new_for_comparison <- reformulate(names(datmm)[!(names(datmm) %in% c("trtbin","trtbinF","fm1"))],response="trtbin")
-## trtbin ~ sso + age + sexF + sexM + raceB + raceW + edub + educ + edud + edue + eduf + edug + eduh + grade + pay + tenure + preY
-
+## trtbin ~ sso + age + sexF + sexM + raceB + raceW + edub + educ + edud + edue + eduf + edug + eduh + grade + tenure + preY
 
 ## The version using asymptotic approximations to do the randomization inference
-balfmla_new_for_comparison <- trtbin ~ pay #sso + age +sexF + sexM + raceB + raceW + edub + edud + edue +eduf +eduh + grade + tenure + preY 
 bt_fm1 <- balanceTest(stats::update(balfmla_new_for_comparison,.~.-1+strata(fm1)),data=datmm)
 bt_fm1$overall["fm1",]
 xb_fm1 <- xBalance(balfmla_new_for_comparison,strata=list(fm1=~fm1),data=datmm,report="all")
@@ -728,7 +725,7 @@ will use to estimate average treatment effects once we are satisfied with the
 design.
 
 
-#### What is balanceTest doing?
+### What is balanceTest doing?
 
 The balanceTest approach compares the strata-weighted average of within-strata differences to that
 which would be expected if we were to repeat an experiment with the same
@@ -748,10 +745,13 @@ setmeanDiffs <- dat %>%
 setmeanDiffs
 ```
 
-### What is balanceTest doing with multiple sets/blocks?
 
 The test statistic is a weighted average of the set-specific differences (*same
-approach as we would use to test the null in a block-randomized experiment*). What weight do we use? In this case, `balanceTest` reports as the strata-adjusted mean difference the average of the mean differences within each strata weighted by the number of treated in each strata, one might call this the average effect of treatment on the treated style weighting.
+approach as we would use to test the null in a block-randomized experiment*).
+What weight do we use? In this case, `balanceTest` reports as the **descriptive**
+strata-adjusted mean difference the average of the mean differences within each
+strata weighted by the number of treated in each strata, one might call this
+the average effect of treatment on the treated style weighting.
 
 ```{r wtmns, echo=TRUE}
 ## The descriptive mean difference using block-size weights
@@ -781,58 +781,39 @@ We will show this distribution in detail here --- generating it by hand using
 code that should be relatively easy to understand (compared to the matrix
 algebra used for efficiency within the RItools package). But we can also
 calculate this $p$-value directly using permutations of treatment and control
-within set using the `coin` package:
-
-TODO START HERE
+within set using the `coin` package as shown above:
 
 ```{r}
-balfmla_fm1 <- stats::update(balfmla_new,.~.-1-strata(pm1))
-bt_fm1 <- balanceTest(balfmla_fm1,data=dat)
-bt_fm1$overall
 
-## coin doesn't know what to do with all of these variables of mixed types plus it wants a factor variable as the treatment
-dat$trtbinF <- factor(dat$trtbin)
-
-datmm <- data.frame(model.matrix(stats::update(balfmla_fm1,.~.-1-strata(fm1)),data=dat))
-datmm$trtbinF <- dat$trtbinF
-datmm$trtbin <- dat$trtbin
-datmm$fm1 <- dat$fm1
-
-library(formula.tools)
-coin_fmla <- ~ trtbinF | fm1
-
-tmp_fmla <- reformulate(names(datmm)[!(names(datmm) %in% c("trtbin","trtbinF","fm1"))],response="trtbin")
-
-## The version using asymptotic approximations to do the randomization inference
-bt_fm1a <- balanceTest(stats::update(tmp_fmla,.~.-1+strata(fm1)),data=datmm)
-bt_fm1$overall["fm1",]
-xb_fm1 <- xBalance(tmp_fmla,strata=list(fm1=~fm1),data=datmm,report="all")
-xb_fm1$overall["fm1",]
-
-lhs(coin_fmla) <- formula.tools::rhs(tmp_fmla)
-## The version using asymptotic approximations to do the randomization inference
 d2_coin_test_asymp <- independence_test(coin_fmla,data=datmm,teststat="quadratic",distribution=asymptotic())
 d2_coin_test_asymp
+pvalue(d2_coin_test_asymp)
 
-statistic(d2_coin_test_asymp,"linear")
-#   sso   age sexF sexM raceB raceW edub educ edud edue eduf edug eduh grade      pay tenure  preY
-#  1874 16327  169  165    44   278   53   48   13   60   33   20   30  1149 26306102   3328 101.8
-statistic(d2_coin_test_asymp,"standardized")
-#      sso   age    sexF   sexM  raceB raceW    edub  educ  edud  edue   eduf    edug  eduh   grade pay tenure  preY
-#  -0.8073 11.02 -0.3581 0.3581 -3.372 4.092 -0.3875 1.465 1.151 1.197 -2.305 -0.3037 -2.42 -0.9319   1 -1.027 12.52
+rbind(c(statistic(d2_coin_test_asymp),pvalue(d2_coin_test_asymp)),
+bt_fm1$overall["fm1",c(1,3)],
+xb_fm1$overall["fm1",c(1,3)])
 
-cbind(xb_fm1$results[,c("adj.diff","std.diff","z"),],matrix(statistic(d2_coin_test_asymp,"standardized"),ncol=1))
-bt_fm1a$results[,c("adj.diff","std.diff","z"),]
+## Notice that the balanceTest from RItools and independence_test from coin have the same test statistic (the precision weighted version)
+#cbind(xb_fm1$results[,c("adj.diff","std.diff","z"),],coin_test_stat=matrix(statistic(d2_coin_test_asymp,"standardized"),ncol=1),
+#bt_fm1$results[,c("adj.diff","std.diff","z"),])
+cbind(bt_fm1$results[,c("adj.diff","std.diff","z"),],coin_test_stat=matrix(statistic(d2_coin_test_asymp,"standardized"),ncol=1))
 
 ## The version using permutations to do the randomization inference
 d2_coin_test_perm<- independence_test(coin_fmla,data=datmm,teststat="quadratic",distribution=approximate(nresample = 10000))
 d2_coin_test_perm
 
-## Draw from the two different approximations to the null distribution
+## Draw from the two different approximations to the null distribution from the two packages
+## Using the same seed for each drawing approach
 set.seed(12345)
+## These two use the coin package rperm function to draw from the distributions implied by the independence_test (a chisq in one case, and a permutation dist in the other)
 null_perm_dist <- rperm(d2_coin_test_perm,10000)
+set.seed(12345)
 null_asymp_dist <- rperm(d2_coin_test_asymp,10000)
+## This next is what is used by balanceTest
+set.seed(12345)
 bt_dist <- rchisq(n=10000,df=16)
+pchisq(bt_fm1$overall["fm1",1],15,lower.tail=FALSE)
+bt_fm1$overall["fm1",]
 
 d2_dists <- data.frame(tstat=c(null_perm_dist,null_asymp_dist),type=rep(c("perm","asymp"),each=10000))
 
@@ -840,26 +821,218 @@ dist_compare <- ggplot(d2_dists,aes(x=tstat,group=type,color=type))+
   geom_density()
 
 dist_compare
+```
 
-## Investigating the discrepancy
+Notice that the $\chi^2$ distributions are very closely approximating the permutation based distribution?
 
-tmp <- balanceTest(pr ~ date + t1 + t2 + cap + ne + ct + bw + cum.n + strata(pt),data=nuclearplants)
-nuclearplants$prF <- factor(nuclearplants$pr)
-nuclearplants$ptF <- factor(nuclearplants$pt)
-tmp_coin <- independence_test(date + t1 + t2 + cap + ne + ct + bw + cum.n ~ prF | ptF, teststat="quadratic",data=nuclearplants)
+Now we can do the permutations by hand to be more clear about what is going on.
+We first calculate the $d$-statistics (which are just stratum-weighted
+differences in means), and then $d^2$ statistic. We generate their
+distributions using permutations that repeat the design of the
+putative/metaphorical randomized experiment.
 
-tmp$overall
-tmp_coin
-statistic(tmp_coin)
+```{r}
+
+d_stat <- function(covs_dat,trt,strat){
+  dat <- cbind(covs_dat,z=trt,s=strat)
+  cov_nms <- names(covs_dat)
+  datb <- dat %>% group_by(s) %>%
+    summarize(across(.cols=one_of(cov_nms),function(x){ mean(x[z==1]) - mean(x[z==0])}),
+  nb=n(),
+  pib=mean(z),
+  nbwt=nb/nrow(dat),
+  hbwt0= pib * (1-pib) * nbwt) %>% ungroup()
+  datb$hbwt <- datb$hbwt0/sum(datb$hbwt0)
+  adjmns <- datb %>% summarize(across(.cols=all_of(cov_nms),function(x){ sum(x*hbwt) }))
+  adjmnsmat <- as.matrix(adjmns)
+  return(adjmnsmat)
+}
+
+test_d_stat <- d_stat(covs_dat=dplyr::select(datmm,-one_of(c("trtbinF","trtbin","fm1"))),trt=datmm$trtbin,strat=datmm$fm1)
+## xb_fm1$results[,"adj.diff","fm1"] ## for comparison, the older xBalance function reports the inferential test stats and not the descriptive ones
+
+d2_stat <- function(dstats,ddist=NULL,theinvcov=NULL){
+  ## d is the vector of d statistics
+  ## ddist is the matrix of the null reference distributions of the d statistics
+  if(is.null(theinvcov) & !is.null(ddist)){
+    as.numeric( t(dstats) %*% solve(cov(t(ddist))) %*% dstats)
+  } else {
+    as.numeric( t(dstats) %*% theinvcov %*% dstats)
+  }
+}
+
+## Now generate the distribution of the d statistics under the null
+new_randomization <- function(z,s){
+  ## This is for conceptual understanding. So it will be slow.
+  newz <- data.frame(z,s) %>% group_by(s) %>% mutate(newz=sample(z)) %>% ungroup() %>% dplyr::select(newz) %>% unlist()
+  return(newz)
+}
+
+## This should keep the same number of treated and controls in each strata as the original
+## we are just shuffling treatment within strata in the same way that we would imagine to
+## have done so if we were assigning treatment in a block randomized trial
+
+test_new_rand <- new_randomization(datmm$trtbin,datmm$fm1)
+stopifnot(all.equal(table(z=datmm$trtbin,s=datmm$fm1),table(z=test_new_rand,s=datmm$fm1)))
+cov_nms <- names(dplyr::select(datmm,-one_of(c("trtbinF","trtbin","fm1"))))
+
+#d_stat(trt=new_randomization(datmm$trtbin,datmm$fm1), covs_dat=datmm[,cov_nms], strat= datmm$fm1)
+
+set.seed(12345)
+## This next is fairly slow
+d_dist<-replicate(10000, d_stat(trt=new_randomization(datmm$trtbin,datmm$fm1),
+  covs_dat=datmm[,cov_nms],
+  strat= datmm$fm1))
+## only for now:
+d_dist <- drop(d_dist) ## for some reason d_dist comes out an array
+d_dist[1:3,1:5]
 
 ```
 
+TODO START HERE
+
+```{r}
+#| eval: false
+
+d_dist_cov_mat <- cov(t(d_dist))
+inv_dist_cov_mat <- MASS::ginv(d_dist_cov_mat)
+## We use the generalized inverse because the cov matrix is nearly singular (not exactly though).
+## So, the following produces an error
+## invCovDDist <- solve(cov(t(d_dist)))
+# Here we can see the preY is close to a linear combination of the other columns
+##eigen(d_dist_cov_mat)
+
+## The observed values of the test statistics:
+obs_d <- drop(d_stat(trt=datmm$trtbin,covs_dat=datmm[,cov_nms],strat=datmm$fm1))
+obs_d2<- d2_stat(obs_d,d_dist,inv_dist_cov_mat)
+
+## The distribution of the d2 test statistic
+d2_dist<-apply(d_dist, 2, function(thed){
+                 d2_stat(thed,theinvcov=inv_dist_cov_mat)
+         })
+
+## The chi-squared reference distribution only uses a one-sided p-value going in the positive direction
+d2_p<-mean(d2_dist>=obs_d2)
+cbind(obs_d2,d2_p)
+bt_fm1$overal
+
+length(d2_dist)
+
+d2_dists <- data.frame(tstat=c(null_perm_dist,null_asymp_dist,d2_dist),type=rep(c("perm","asymp","perm_by_hand"),each=10000))
+
+dist_compare <- ggplot(d2_dists,aes(x=tstat,group=type,color=type))+
+  geom_density()
+
+dist_compare
+
+```
+
+So, we can see that the omnibus test is a test the combines the tests of the
+nulls for each individual variable. The use of the $\chi^2$ distribution as a
+large sample approximation to the randomization distribution arises from the
+fact that we taking a linear combination (a sum) of mean differences, each of
+which is squared and standardized and has its own Normal distribution (in large
+samples like the one we are working with here). We have also seen that we can
+apply the $d^2$ and $d$ tests directly by repeatedly reshuffling the treatment
+assignment following the matched-design within strata. This foreshadows our
+recommended approach to estimating causal effects and testing hypotheses about
+causal effects --- we will do so with reference to an as-if-randomized
+treatment assignment process within each of the strata created by the matching
+procedure.
 
 
+## Using Designmatch for bipartite matching
 
+Another tool for creating matched designs when you have one intervention group
+and one control group is provided by the `bmatch` function in the `designmatch`
+package. It has many options that allow fine-tuning of the stratified design.
 
+To use this function the data have to be sorted in decreasing order of the treatment vector:
 
-## Something new: Calipers
+```{r}
+library(designmatch)
+library(highs)
+
+datmm_dm <- datmm[order(datmm$trtbin,decreasing=TRUE),]
+
+## Convert propensity distance matrix into a form useable by bmatch (because the data was re-ordered):
+ps_dist_dm_0 <-as.matrix(ps_dist)[row.names(datmm_dm)[datmm_dm$trtbin==1],row.names(datmm_dm)[datmm_dm$trtbin==0]]
+## designmatch is picky about how the distance matrix is scaled
+ps_dist_dm<- round(ps_dist_dm_0/mean(ps_dist_dm_0),2)
+## See the manual page for distmat() in the designmatch manual for its built in way to produce mahalanobis distance matrices
+
+solverlist <- list(name = "highs", approximate = 1, t_max = 1000, trace = 1)
+
+## bmatch does not do full matching. It defaults to pair matching and allows
+## fixed numbers of controls (i.e. every match can be 1 to 2, or 1 to 3, but not a
+## mixture of those)
+
+## I'm still a little confused by the subset_weight argument. Sometimes I use
+## the total_groups function instead. ## Here I am copying the call to distmatch()
+## from designmatch where subset_weight=0 and the emphasis is on minimizing
+## distances (just like the pairmatch function in optmatch)
+
+dm1 <- bmatch(t_ind=datmm_dm$trtbin, dist_mat=ps_dist_dm, solver=solverlist, subset_weight=0, total_groups=sum(datmm_dm$trtbin),n_controls=1)
+
+## there is no summary method or other methods to easily inspect the result,
+## but we created a function to convert the results of bmatch to a factor like
+## that produced by optmatch so that we can use tidyverse to make plots and
+## describe quantiles of differences as well as use balanceTest and eventually
+## estimate and test.
+
+#' Convert a bmatch object to a data frame for use in merging onto an original data frame
+#'
+#' 
+#' @param obj a bmatch object
+#' @param origid the vector of identifications from the original data frame
+#' @details This function has only been tested with pair matches
+bmatch_to_dat <- function(obj,origid) {
+  ## This is pair matching. Make sure of it.
+  stopifnot(length(obj$t_id) == length(obj$c_id))
+  ## We want a factor that we can merge onto our
+  ## existing dataset. Here returning a data.frame so that
+  ## we can merge --- seems less error prone than using
+  ## rownames even if it is slower.
+  matchesdat <- data.frame(
+    set_id = obj$group_id,
+    match_id = c(obj$t_id, obj$c_id)
+  )
+  matchesdat$id <- origid[matchesdat$match_id]
+  return(matchesdat)
+}
+
+datmm_dm$id <- row.names(datmm_dm)
+dm1_dat <- bmatch_to_dat(dm1,origid=datmm_dm$id)
+datmm_dm_res <- left_join(datmm_dm,dm1_dat,by="id")
+## This particular design dropped 332 people.
+sum(is.na(datmm_dm_res$set_id))
+
+```
+
+We can evaluate the design produced by `bmatch` just as we did above. Here we just demonstrate balance test since the strata-quantiles approach code is the same as above (modified to use `set_id` rather than `fm1`)
+
+```{r}
+dm1_fm1 <- balanceTest(stats::update(balfmla_new_for_comparison,.~.-1+strata(set_id)),data=datmm_dm_res)
+dm1_fm1$overall["set_id",]
+```
+
+### Tools to improve design
+
+ So far we have not done a very good job in removing the relationships that
+ exist between the covariates and the intervention (as can be seen from the
+ omnibus balance test p-values or even from directly looking at each strata and
+ the imbalance within them). So, we will try to improve the design by using a
+ few different tactics: (1) Exactly matching based on some important
+ categorical variables such as  `sex` (using either the `exactMatch()` function
+ from `optmatch` or the `exact` argument to `bmatch`) (2) And requiring that
+ members of strata differ by no more than a certain amount on either the
+ dimension reduced score (like the propensity score) or one or more specific
+ variables (using either the `caliper()` function from `optmatch` or the `near`
+ argument to bmatch).
+
+## Calipers
+
+The optmatch package allows calipers (which forbids certain pairs from being matched).^[You can implement penalties by hand.] Here, for example, we forbid comparisons which differ by more than 2 propensity score standardized distances.
 
 Maybe we would prefer to limit the worse matches?
 
@@ -875,15 +1048,6 @@ xb2 <- balanceTest(balfmla_new2, data = dat, p.adjust.method="holm")
 xb2$overall
 xb2$results[, , ]
 ```
-
-
-
-### Tools to improve design
-
-
-#### Calipers
-
-The optmatch package allows calipers (which forbids certain pairs from being matched).^[You can implement penalties by hand.] Here, for example, we forbid comparisons which differ by more than 2 propensity score standardized distances.
 
 ```{r}
 ## First inspect the distance matrix itself: how are the distances distributed?
@@ -960,14 +1124,21 @@ mean(unlist(fmCal2b_dists))
 
 ## Exact Matching
 
-We often have covariates that are categorical/nominal and for which we really care about strong balance. One approach to solve this problem is match **exactly** on one or more of such covariates. If `fullmatch` or `match_on` is going slow, this is also an approach to speed things up.
+We often have covariates that are categorical/nominal and for which we really
+care about strong balance. One approach to solve this problem is match
+**exactly** on one or more of such covariates. If the process of matching is
+going slow, this is also an approach to speed things up.
+
+Here we demonstrate full matching but within categories defined by `grade`
+(recoded to lo versus high) and gender:
 
 ```{r echo=FALSE}
 dat$gradeLowHi <- ifelse(dat$grade %in% c(4,5,6), "hi", "lo")
+with(dat,table(grade,gradeLowHi))
 ```
 
 ```{r}
-dist2 <- ps_dist + exactMatch(trtbin ~ gradeLowHi, data = dat)
+dist2 <- ps_dist + exactMatch(trtbin ~ gradeLowHi+sex, data = dat)
 summary(dist2)
 ## or mhdist <- match_on(balfmla,within=exactMatch(trtbin~gradeLowHi,data=dat),data=dat,method="rank_mahalanobis")
 ## or fmEx1 <- fullmatch(update(balfmla,.~.+strata(gradeLowHi)),data=dat,method="rank_mahalanobis")
@@ -976,38 +1147,36 @@ summary(fmEx1, min.controls = 0, max.controls = Inf, propensity.model = psmod)
 print(fmEx1, grouped = T)
 dat$fmEx1 <- fmEx1
 ```
-## Exact Matching
-
 ```{r}
 ftable(grade = dat$gradeLowHi, Trt = dat$trtbin, fmEx1, col.vars = c("grade", "Trt"))
 ```
 
-**Exact Matching**
+### A further note on exact matching: Splitting up the matching process by hand
 
-**Calipers**
+If exact matching is still not working, one can directly split up the matching
+process into separte pieces that would be defined by the exact matching calls
+above.
 
-**Missing data**
+In `optmatch` once can follow these kinds of ideas:
+<https://cran.r-project.org/web/packages/optmatch/vignettes/matching-within-subgroups.html>.
+For example, one can first produce the distance matrices of interest and then
+use `findSubproblems()` to create a list of matrices, each of which can be
+addressed as its own matching problem (in a loop, for example).
 
+# Non-bipartite matching using `nmatch` from `designmatch`
 
-### Using designmatch
-
-## Non-bipartite matching using designmatch
-
-## Estimate effects
+# Estimating effects and testing hypotheses after matching
 
 ### After bipartite matching
 
 ### After non-bipartite matching
 
-## Assess sensitivity to unobserved confounders
+# Assessing sensitivity to unobserved confounders
 
 ```{r}
 library(senstrat)
 library(sensemakr)
 ```
-
-
-
 
 
 # References
